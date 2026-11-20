@@ -84,7 +84,7 @@ fn http_error_message(status: Option<u16>) -> &'static str {
 }
 
 /// Discord HTTP errors become moderator-facing messages; anything else passes through.
-fn discord_error(e: serenity::Error) -> Error {
+pub(crate) fn discord_error(e: serenity::Error) -> Error {
     match &e {
         serenity::Error::Http(serenity::HttpError::UnsuccessfulRequest(r)) => {
             UserError(http_error_message(Some(r.status_code.as_u16())).into()).into()
