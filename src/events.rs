@@ -1,5 +1,5 @@
 use crate::moderation::jobs::{self, JobKind};
-use crate::logging::messages;
+use crate::logging::{audit, messages};
 use crate::moderation::nickname;
 use crate::{Data, Error};
 use poise::serenity_prelude as serenity;
@@ -19,7 +19,17 @@ pub async fn event_handler(
     }
     // Enforcement failures are logged, never propagated out of the handler.
     match event {
-        serenity::FullEvent::GuildMemberAddition { new_member } => check_member(ctx, data, new_member).await,
+        serenity::FullEvent::GuildMemberAddition { new_member } => {
+            check_member(ctx, data, new_member).await;
+            audit::on_join(ctx, data, new_member).await
+        }
+        serenity::FullEvent::GuildMemberRemoval { guild_id, user, member_data_if_available } => {
+            audit::on_leave(ctx, data, *guild_id, user, member_data_if_available.as_ref()).await
+        }
+        serenity::FullEvent::VoiceStateUpdate { old, new } => audit::on_voice(ctx, data, old.as_ref(), new).await,
+        serenity::FullEvent::GuildAuditLogEntryCreate { entry, guild_id } => {
+            audit::on_entry(ctx, data, *guild_id, entry).await
+        }
         serenity::FullEvent::GuildMemberUpdate { old_if_available, new, event } => {
             let now = event.nick.as_deref().or(event.user.global_name.as_deref()).unwrap_or(&event.user.name);
             // No old copy: cannot tell what changed, so check anyway.
