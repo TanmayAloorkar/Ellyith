@@ -1,3 +1,5 @@
+pub mod duration;
+pub mod text;
 pub mod events;
 
 pub struct Data {
