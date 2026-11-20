@@ -1,6 +1,8 @@
 pub mod duration;
 pub mod text;
 pub mod events;
+pub mod settings;
+pub mod moderation;
 
 pub struct Data {
     pub db: sqlx::PgPool,
