@@ -26,8 +26,8 @@ impl std::error::Error for UserError {}
 
 pub fn all_commands() -> Vec<poise::Command<Data, Error>> {
     {
-        use moderation::commands::punish::*;
-        vec![ping(), moderation::commands::config::config(), warn(), timeout(), untimeout(), kick(), ban(), tempban(), unban()]
+        use moderation::commands::{cases, punish::*};
+        vec![ping(), moderation::commands::config::config(), warn(), timeout(), untimeout(), kick(), ban(), tempban(), unban(), cases::case(), cases::history(), cases::note(), cases::mywarnings()]
     }
 }
 
