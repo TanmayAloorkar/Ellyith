@@ -4,3 +4,4 @@ pub mod commands;
 pub mod cases;
 pub mod templates;
 pub mod actions;
+pub mod jobs;

@@ -120,6 +120,15 @@ fn is_unknown_member_code(code: isize) -> bool {
     matches!(code, 10007 | 10013)
 }
 
+/// Discord says the ban does not exist: HTTP 404 or Unknown Ban (10026).
+pub(crate) fn is_unknown_ban(e: &serenity::Error) -> bool {
+    matches!(e, serenity::Error::Http(serenity::HttpError::UnsuccessfulRequest(r)) if r.status_code.as_u16() == 404 || is_unknown_ban_code(r.error.code))
+}
+
+fn is_unknown_ban_code(code: isize) -> bool {
+    code == 10026
+}
+
 pub async fn authorize(
     ctx: Context<'_>,
     required: Permissions,
@@ -188,6 +197,13 @@ mod tests {
         assert!(!is_unknown_member_code(0));
         assert!(!is_unknown_member_code(20028)); // rate limit
         assert!(!is_absent(&serenity::Error::Other("x")));
+    }
+
+    #[test]
+    fn unknown_ban_code_only() {
+        assert!(is_unknown_ban_code(10026));
+        assert!(!is_unknown_ban_code(10007));
+        assert!(!is_unknown_ban(&serenity::Error::Other("x")));
     }
 
     #[test]

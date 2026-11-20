@@ -80,7 +80,9 @@ async fn main() {
                     serenity::GuildId::new(guild_id),
                 )
                 .await?;
-                Ok(Data { db: pool })
+                let data = Data { db: pool };
+                tokio::spawn(aio_bot::scheduler::run(ctx.clone(), data.clone()));
+                Ok(data)
             })
         })
         .build();

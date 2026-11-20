@@ -1,5 +1,6 @@
 use crate::duration::{format_duration, MAX_TIMEOUT_SECS};
 use crate::logging::{case_embed, send_log, CaseEvent, LogCategory};
+use crate::moderation::jobs::{self, JobKind};
 use crate::moderation::cases::{self, Actor, Case, CaseKind, NewCase};
 use crate::moderation::ladder::{self, LadderAction, LadderRule};
 use crate::moderation::perms::{is_absent, is_exempt_from_auto, member_facts};
@@ -42,7 +43,7 @@ fn bot_can_apply(kind: CaseKind, bot: Permissions, target_is_admin_or_owner: boo
     let need = match kind {
         CaseKind::Timeout | CaseKind::Untimeout => Permissions::MODERATE_MEMBERS,
         CaseKind::Kick => Permissions::KICK_MEMBERS,
-        CaseKind::Ban | CaseKind::Unban => Permissions::BAN_MEMBERS,
+        CaseKind::Ban | CaseKind::Tempban | CaseKind::Unban => Permissions::BAN_MEMBERS,
         _ => Permissions::empty(),
     };
     if !bot.contains(need) {
@@ -124,9 +125,16 @@ async fn send_dm(ctx: &serenity::Context, data: &Data, req: &ActionRequest, numb
 
 /// Callers have already run `authorize`. Creates no case if the Discord action fails.
 pub async fn execute(ctx: &serenity::Context, data: &Data, req: ActionRequest) -> Result<Case, Error> {
-    if req.kind == CaseKind::Tempban {
-        return Err(UserError("Tempban is not available yet.".into()).into());
-    }
+    // Validate before the DM so an unrepresentable duration never notifies the target.
+    let unban_at = match req.kind {
+        CaseKind::Tempban => Some(
+            req.duration
+                .filter(|d| d.num_seconds() >= 1)
+                .and_then(|d| Utc::now().checked_add_signed(d))
+                .ok_or_else(|| UserError("Tempban needs a duration of at least 1 second, and a valid end date.".into()))?,
+        ),
+        _ => None,
+    };
     precheck(ctx, &req).await?;
     let gid = req.guild_id.get() as i64;
     let mut number = None;
@@ -139,7 +147,7 @@ pub async fn execute(ctx: &serenity::Context, data: &Data, req: ActionRequest) -
 
     let audit = truncate(req.reason.as_deref().unwrap_or(""), 512);
     let (g, t) = (req.guild_id, req.target);
-    let mut expires_at = None;
+    let mut expires_at = unban_at;
     match req.kind {
         CaseKind::Warn => {}
         CaseKind::Timeout => {
@@ -160,9 +168,19 @@ pub async fn execute(ctx: &serenity::Context, data: &Data, req: ActionRequest) -
                 .map_err(discord_error)?;
         }
         CaseKind::Kick => g.kick_with_reason(ctx, t, &audit).await.map_err(discord_error)?,
-        CaseKind::Ban => g.ban_with_reason(ctx, t, req.ban_delete_days.min(7), &audit).await.map_err(discord_error)?,
+        CaseKind::Ban | CaseKind::Tempban => {
+            g.ban_with_reason(ctx, t, req.ban_delete_days.min(7), &audit).await.map_err(discord_error)?
+        }
         CaseKind::Unban => ctx.http.remove_ban(g, t, Some(&audit)).await.map_err(discord_error)?,
         other => return Err(UserError(format!("{} is not available yet.", other.label())).into()),
+    }
+
+    // A new ban, tempban or manual unban supersedes any pending scheduled unban.
+    if matches!(req.kind, CaseKind::Ban | CaseKind::Tempban | CaseKind::Unban) {
+        jobs::cancel(&data.db, gid, JobKind::Unban, t.get() as i64).await?;
+    }
+    if let Some(at) = unban_at {
+        jobs::schedule(&data.db, gid, JobKind::Unban, t.get() as i64, at).await?;
     }
 
     let case = record_case(
@@ -239,6 +257,9 @@ mod tests {
         let kick = LadderRule { warn_count: 5, action: LadderAction::Kick, duration_secs: None };
         let r = ladder_request(GuildId::new(1), UserId::new(2), &kick, 5);
         assert_eq!((r.kind, r.duration), (CaseKind::Kick, None));
+        let tb = LadderRule { warn_count: 7, action: LadderAction::Tempban, duration_secs: Some(86_400) };
+        let r = ladder_request(GuildId::new(1), UserId::new(2), &tb, 7);
+        assert_eq!((r.kind, r.duration), (CaseKind::Tempban, Some(Duration::seconds(86_400))));
     }
 
     #[test]
@@ -247,6 +268,7 @@ mod tests {
         for (k, p) in [
             (CaseKind::Kick, Permissions::KICK_MEMBERS),
             (CaseKind::Ban, Permissions::BAN_MEMBERS),
+            (CaseKind::Tempban, Permissions::BAN_MEMBERS),
             (CaseKind::Unban, Permissions::BAN_MEMBERS),
             (CaseKind::Timeout, Permissions::MODERATE_MEMBERS),
             (CaseKind::Untimeout, Permissions::MODERATE_MEMBERS),

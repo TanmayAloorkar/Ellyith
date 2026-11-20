@@ -93,6 +93,28 @@ pub async fn ban(
     run(ctx, spec, &user, reason, None, days).await
 }
 
+/// Ban a user for a limited time, then unban automatically.
+#[poise::command(slash_command, guild_only)]
+pub async fn tempban(
+    ctx: Context<'_>,
+    user: User,
+    duration: String,
+    reason: Option<String>,
+    #[description = "Days of messages to delete (0-7)"] delete_days: Option<u8>,
+) -> Result<(), Error> {
+    let d = parse_duration(&duration)?;
+    // Reject up front what `Utc::now() + d` cannot represent.
+    if chrono::Utc::now().checked_add_signed(d).is_none() {
+        return Err(UserError("That duration is too long.".into()).into());
+    }
+    let days = delete_days.unwrap_or(0);
+    if days > 7 {
+        return Err(UserError("delete_days must be between 0 and 7.".into()).into());
+    }
+    let spec = Spec { required: Permissions::BAN_MEMBERS, kind: CaseKind::Tempban, needs_member: false };
+    run(ctx, spec, &user, reason, Some(d), days).await
+}
+
 /// Unban a user (paste their ID).
 #[poise::command(slash_command, guild_only)]
 pub async fn unban(ctx: Context<'_>, user: User, reason: Option<String>) -> Result<(), Error> {

@@ -4,7 +4,9 @@ pub mod events;
 pub mod settings;
 pub mod moderation;
 pub mod logging;
+pub mod scheduler;
 
+#[derive(Clone)]
 pub struct Data {
     pub db: sqlx::PgPool,
 }
@@ -25,7 +27,7 @@ impl std::error::Error for UserError {}
 pub fn all_commands() -> Vec<poise::Command<Data, Error>> {
     {
         use moderation::commands::punish::*;
-        vec![ping(), moderation::commands::config::config(), warn(), timeout(), untimeout(), kick(), ban(), unban()]
+        vec![ping(), moderation::commands::config::config(), warn(), timeout(), untimeout(), kick(), ban(), tempban(), unban()]
     }
 }
 
