@@ -53,13 +53,22 @@ fn change_lines(changes: &[Change]) -> String {
     truncate(&lines.join("\n"), 1024)
 }
 
+/// target_id is a channel, role or user id depending on the action.
+fn target_label(action: &Action, id: Option<u64>) -> String {
+    let Some(id) = id else { return "Unknown".into() };
+    match action {
+        Action::Channel(_) | Action::ChannelOverwrite(_) => format!("<#{id}> ({id})"),
+        Action::Role(_) => format!("<@&{id}> ({id})"),
+        Action::Member(_) => format!("<@{id}> ({id})"),
+        _ => id.to_string(),
+    }
+}
+
 fn entry_embed(entry: &AuditLogEntry, changes: &[Change]) -> CreateEmbed {
     let mut e = CreateEmbed::new()
         .title(format!("{:?}", entry.action))
         .field("Executor", format!("<@{}>", entry.user_id), true);
-    if let Some(t) = entry.target_id {
-        e = e.field("Target", format!("<@{0}> ({0})", t.get()), true);
-    }
+    e = e.field("Target", target_label(&entry.action, entry.target_id.map(|t| t.get())), true);
     if let Some(r) = entry.reason.as_deref().filter(|r| !r.is_empty()) {
         e = e.field("Reason", truncate(r, 1024), false);
     }
@@ -148,6 +157,16 @@ mod tests {
         assert_eq!(cat(m(), &[nick()], false), Some(MemberUpdates));
         assert_eq!(cat(m(), &[nick(), timeout()], false), Some(ExternalMod));
         assert_eq!(cat(m(), &[], false), None);
+    }
+
+    #[test]
+    fn target_labels() {
+        assert_eq!(target_label(&Action::Channel(ChannelAction::Create), Some(5)), "<#5> (5)");
+        assert_eq!(target_label(&Action::ChannelOverwrite(ChannelOverwriteAction::Update), Some(5)), "<#5> (5)");
+        assert_eq!(target_label(&Action::Role(RoleAction::Delete), Some(5)), "<@&5> (5)");
+        assert_eq!(target_label(&Action::Member(MemberAction::Kick), Some(5)), "<@5> (5)");
+        assert_eq!(target_label(&Action::GuildUpdate, Some(5)), "5");
+        assert_eq!(target_label(&Action::GuildUpdate, None), "Unknown");
     }
 
     #[test]
