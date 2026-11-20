@@ -1,4 +1,4 @@
-use super::{cache::CachedMessage, send_log, LogCategory};
+use super::{cache::{CachedMessage, MAX_CONTENT_CHARS}, send_log, LogCategory};
 use crate::text::truncate;
 use crate::Data;
 use poise::serenity_prelude::{CreateEmbed, GuildId, Http, Message, MessageUpdateEvent};
@@ -31,7 +31,7 @@ pub async fn on_update(http: &Http, data: &Data, new: Option<&Message>, ev: &Mes
     let Some(content) = ev.content.clone() else { return };
     let id = ev.id.get();
     let old = data.msg_cache.get(id);
-    if old.as_ref().is_some_and(|o| o.content == content) {
+    if old.as_ref().is_some_and(|o| o.content == truncate(&content, MAX_CONTENT_CHARS)) {
         return;
     }
     let author = old.as_ref().map(|o| o.author_id).or(ev.author.as_ref().map(|u| u.id.get()));

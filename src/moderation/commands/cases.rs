@@ -6,7 +6,7 @@ use crate::moderation::perms::authorize;
 use crate::settings;
 use crate::text::truncate;
 use crate::{Context, Error, UserError};
-use poise::serenity_prelude::{CreateAllowedMentions, CreateEmbed, CreateEmbedFooter, GuildId, Permissions, User};
+use poise::serenity_prelude::{CreateAllowedMentions, CreateEmbed, CreateEmbedFooter, GuildId, Permissions, User, UserId};
 
 const MAX_LINES: usize = 25;
 const MAX_LINE: usize = 150;
@@ -56,8 +56,11 @@ pub async fn case_view(ctx: Context<'_>, #[min = 1] number: i32) -> Result<(), E
 #[poise::command(slash_command, guild_only, rename = "reason")]
 pub async fn case_reason(ctx: Context<'_>, #[min = 1] number: i32, #[max_length = 1000] text: String) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
-    authorize(ctx, Permissions::MODERATE_MEMBERS, None).await?;
     let g = guild(ctx)?;
+    let Some(existing) = cases::get(&ctx.data().db, g.get() as i64, number).await? else {
+        return ephemeral(ctx, "Case not found.".into()).await;
+    };
+    authorize(ctx, Permissions::MODERATE_MEMBERS, Some(UserId::new(existing.target_id as u64))).await?;
     let Some(c) = cases::set_reason(&ctx.data().db, g.get() as i64, number, Some(text)).await? else {
         return ephemeral(ctx, "Case not found.".into()).await;
     };
@@ -69,8 +72,11 @@ pub async fn case_reason(ctx: Context<'_>, #[min = 1] number: i32, #[max_length 
 #[poise::command(slash_command, guild_only, rename = "remove")]
 pub async fn case_remove(ctx: Context<'_>, #[min = 1] number: i32) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
-    authorize(ctx, Permissions::MODERATE_MEMBERS, None).await?;
     let g = guild(ctx)?;
+    let Some(existing) = cases::get(&ctx.data().db, g.get() as i64, number).await? else {
+        return ephemeral(ctx, "Case not found or already removed.".into()).await;
+    };
+    authorize(ctx, Permissions::MODERATE_MEMBERS, Some(UserId::new(existing.target_id as u64))).await?;
     let by = ctx.author().id.get() as i64;
     let Some(c) = cases::soft_remove(&ctx.data().db, g.get() as i64, number, by).await? else {
         return ephemeral(ctx, "Case not found or already removed.".into()).await;
@@ -106,7 +112,7 @@ pub async fn history(ctx: Context<'_>, user: User) -> Result<(), Error> {
 }
 
 /// Private moderator notes.
-#[poise::command(slash_command, guild_only, subcommands("note_add", "note_list", "note_remove"))]
+#[poise::command(slash_command, guild_only, subcommands("note_add", "note_list", "note_view", "note_remove"))]
 pub async fn note(_: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
@@ -134,6 +140,24 @@ pub async fn note_list(ctx: Context<'_>, user: User) -> Result<(), Error> {
     let mut lines = vec![format!("<@{}>: {} note(s)", user.id, all.len())];
     lines.extend(all.iter().take(MAX_LINES).map(|n| format!("`#{}` <@{}> <t:{}:d>: {}", n.id, n.author_id, n.created_at.timestamp(), truncate(&n.content, 100))));
     embed_reply(ctx, lines_embed("Notes", lines)).await
+}
+
+/// Show a full note by its id.
+#[poise::command(slash_command, guild_only, rename = "view")]
+pub async fn note_view(ctx: Context<'_>, #[min = 1] id: i64) -> Result<(), Error> {
+    ctx.defer_ephemeral().await?;
+    authorize(ctx, Permissions::MODERATE_MEMBERS, None).await?;
+    let g = guild(ctx)?.get() as i64;
+    let Some(n) = notes::get(&ctx.data().db, g, id).await? else {
+        return ephemeral(ctx, "Note not found.".into()).await;
+    };
+    let e = CreateEmbed::new()
+        .title(format!("Note #{}", n.id))
+        .description(&n.content)
+        .field("About", format!("<@{}>", n.target_id), true)
+        .field("Author", format!("<@{}>", n.author_id), true)
+        .field("Date", format!("<t:{}:f>", n.created_at.timestamp()), true);
+    embed_reply(ctx, e).await
 }
 
 /// Delete a note by its id.

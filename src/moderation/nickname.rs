@@ -30,7 +30,7 @@ pub fn check_name(name: &str, filtered_words: &[String], hoist_chars: &str) -> O
     if name.chars().next().is_some_and(|c| hoist_chars.contains(c)) {
         return Some(NickViolation::Hoisting);
     }
-    if !name.chars().any(|c| c.is_ascii_alphanumeric()) {
+    if !name.chars().any(|c| c.is_alphanumeric()) {
         return Some(NickViolation::Unmentionable);
     }
     None
@@ -106,7 +106,9 @@ mod tests {
         assert_eq!(check_name("Tanmay", &words, "!"), None);
         assert_eq!(check_name("!Tanmay", &words, "!"), Some(NickViolation::Hoisting));
         assert_eq!(check_name("xBADWORDx", &words, "!"), Some(NickViolation::FilteredWord));
-        assert_eq!(check_name("ｔａｎ", &words, "!"), Some(NickViolation::Unmentionable));
+        assert_eq!(check_name("ｔａｎ", &words, "!"), None);
+        assert_eq!(check_name("तन्मय", &words, "!"), None);
+        assert_eq!(check_name("Иван", &words, "!"), None);
         assert_eq!(check_name("★★★", &words, "!"), Some(NickViolation::Unmentionable));
         assert!(validate_filter_config("Moderated Nickname", &words, "!").is_ok());
         assert!(validate_filter_config("!Renamed", &words, "!").is_err());

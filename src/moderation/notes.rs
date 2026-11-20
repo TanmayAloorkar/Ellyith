@@ -30,6 +30,11 @@ pub async fn list(db: &PgPool, guild_id: i64, target_id: i64) -> Result<Vec<Note
         .await
 }
 
+/// None when the note does not exist in this guild.
+pub async fn get(db: &PgPool, guild_id: i64, id: i64) -> Result<Option<Note>, sqlx::Error> {
+    sqlx::query_as("SELECT * FROM notes WHERE guild_id = $1 AND id = $2").bind(guild_id).bind(id).fetch_optional(db).await
+}
+
 /// Hard delete; false when no such note in this guild.
 pub async fn remove(db: &PgPool, guild_id: i64, id: i64) -> Result<bool, sqlx::Error> {
     let r = sqlx::query("DELETE FROM notes WHERE guild_id = $1 AND id = $2").bind(guild_id).bind(id).execute(db).await?;

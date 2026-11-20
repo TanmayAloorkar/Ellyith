@@ -13,7 +13,22 @@ fn require_env(name: &str) -> String {
 }
 
 async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
-    if let poise::FrameworkError::Command { error, ctx, .. } = error {
+    // Setup failed: the bot would stay connected with no user data, so stop and let the host show it.
+    if let poise::FrameworkError::Setup { error, .. } = &error {
+        tracing::error!("Error in user data setup: {error:?}");
+        std::process::exit(1);
+    }
+    let failed = match error {
+        poise::FrameworkError::Command { error, ctx, .. } => Some((error, ctx)),
+        poise::FrameworkError::CommandCheckFailed { error: Some(error), ctx, .. } => Some((error, ctx)),
+        other => {
+            if let Err(e) = poise::builtins::on_error(other).await {
+                tracing::error!("error while handling error: {e}");
+            }
+            None
+        }
+    };
+    if let Some((error, ctx)) = failed {
         let text = match error.downcast_ref::<UserError>() {
             Some(user_error) => user_error.0.clone(),
             None => {
@@ -25,8 +40,6 @@ async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
         if let Err(e) = ctx.send(reply).await {
             tracing::error!("failed to send error reply: {e}");
         }
-    } else if let Err(e) = poise::builtins::on_error(error).await {
-        tracing::error!("error while handling error: {e}");
     }
 }
 
@@ -103,5 +116,6 @@ async fn main() {
         .expect("failed to build the Discord client");
     if let Err(e) = client.start().await {
         tracing::error!("client stopped: {e}");
+        std::process::exit(1);
     }
 }

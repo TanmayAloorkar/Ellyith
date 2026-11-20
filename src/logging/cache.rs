@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-const MAX_CONTENT_CHARS: usize = 4000;
+pub const MAX_CONTENT_CHARS: usize = 1024;
 const MAX_ATTACHMENTS: usize = 10;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -123,7 +123,7 @@ mod tests {
         m.attachment_urls = vec!["u".into(); 30];
         c.insert(1, m);
         let got = c.get(1).unwrap();
-        assert_eq!(got.content.chars().count(), 4000);
+        assert_eq!(got.content.chars().count(), 1024);
         assert_eq!(got.attachment_urls.len(), 10);
         c.remove(1);
         // insert+remove churn must not leak stale ids in the queue

@@ -26,7 +26,7 @@ Never commit or paste real values of these variables into the repo.
 
 ## 3. First start
 
-Start the server and watch the console. Migrations run automatically on startup. Look for the log line containing "connected as"; that means the bot is logged in to Discord. Startup failures show as panics with `failed to connect to the database` (check `DATABASE_URL`), `failed to run migrations`, or `failed to build the Discord client` (check `DISCORD_TOKEN`).
+Start the server and watch the console. Migrations run automatically on startup. Look for the log line containing "connected as"; that means the bot is logged in to Discord. Startup failures show as panics with `failed to connect to the database` (check `DATABASE_URL`), `failed to run migrations`, or `failed to build the Discord client` (check `DISCORD_TOKEN`). `Error in user data setup` means command registration failed (usually a wrong `GUILD_ID`, or the bot was invited without the `applications.commands` scope). `client stopped` means the gateway connection failed (check the token and intents). In both cases the process exits with code 1, so Wispbyte's panel shows the server as stopped.
 
 If the console shows `Exec format error`, first confirm the uploaded file is the musl ELF built in step 1 (about 19 MB; `file aio-bot` should say "x86-64, statically linked"). If it is, the host is probably ARM. This path is untested. Add the target and rebuild:
 
@@ -37,13 +37,25 @@ Upload `target/aarch64-unknown-linux-musl/release/aio-bot` in place of the old b
 
 ## 4. Invite and permissions
 
-In the Discord developer portal, Bot tab, enable the privileged intents Server Members and Message Content.
+In the Discord developer portal, Bot tab, keep "Public Bot" OFF so the bot cannot be added to other servers, and enable the privileged intents Server Members and Message Content.
 
 Invite the bot with the permission integer 1099666910342. It covers: View Channels, Send Messages, Embed Links, Read Message History, Manage Messages, View Audit Log, Manage Nicknames, Kick Members, Ban Members, Moderate Members, Move Members, Mute Members. Invite URL form:
 
     https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot%20applications.commands&permissions=1099666910342
 
 After the invite, open Server Settings, Roles, and drag the bot's role above the highest role of each member it must moderate. Discord blocks kicks, bans, timeouts and nickname changes on members whose top role is at or above the bot's.
+
+## Command names
+
+Config commands (Manage Server only):
+
+- `/config modroles add|remove|list`, `/config protected add|remove|list`
+- `/config logs set|disable|list`
+- `/config dm set|reset|view|showmod`
+- `/config ladder set|remove|list`
+- `/config decay on|off`
+- `/config nickwords add|remove|list`
+- `/config nickfilter on|off|hoist|fallback`
 
 ## 5. Smoke test
 

@@ -31,7 +31,7 @@ async fn apply(ctx: Context<'_>, user: User, nick: Option<String>) -> Result<(),
     ctx.defer_ephemeral().await?;
     let s = authorize(ctx, Permissions::MANAGE_NICKNAMES, Some(user.id)).await?;
     require_member(ctx, user.id).await?;
-    if let Some(v) = nick.as_deref().and_then(|n| check_name(n, &s.filtered_words, &s.hoist_chars)) {
+    if let Some(v) = nick.as_deref().filter(|_| s.nick_filter_enabled).and_then(|n| check_name(n, &s.filtered_words, &s.hoist_chars)) {
         return Err(UserError(format!("That nickname {}; the filter would reset it.", v.describe())).into());
     }
     let guild_id = ctx.guild_id().ok_or_else(|| UserError("This command only works in a server.".into()))?;

@@ -10,14 +10,15 @@ use poise::serenity_prelude::{CreateAllowedMentions, GuildChannel, Role};
 
 /// Manage Server only (owner and Administrators pass too).
 async fn manage_guild(ctx: Context<'_>) -> Result<bool, Error> {
-    let Some(guild_id) = ctx.guild_id() else { return Ok(false) };
-    let Some(m) = ctx.author_member().await else { return Ok(false) };
+    let denied = || UserError("You need Manage Server to use /config.".into());
+    let Some(guild_id) = ctx.guild_id() else { return Err(denied().into()) };
+    let Some(m) = ctx.author_member().await else { return Err(denied().into()) };
     let ok = ctx
         .serenity_context()
         .cache
         .guild(guild_id)
         .is_some_and(|g| g.owner_id == m.user.id || g.member_permissions(&m).manage_guild());
-    Ok(ok)
+    if ok { Ok(true) } else { Err(denied().into()) }
 }
 
 /// Configure the bot.
@@ -141,7 +142,15 @@ pub async fn logs(_: Context<'_>) -> Result<(), Error> {
 
 /// Send a log category to a channel.
 #[poise::command(slash_command, guild_only, rename = "set")]
-pub async fn logs_set(ctx: Context<'_>, category: LogCategory, channel: GuildChannel) -> Result<(), Error> {
+pub async fn logs_set(
+    ctx: Context<'_>,
+    category: LogCategory,
+    #[channel_types("Text", "News")] channel: GuildChannel,
+) -> Result<(), Error> {
+    let hello = poise::serenity_prelude::CreateMessage::new().content(format!("Logging {} here.", category.as_str()));
+    if channel.id.send_message(ctx, hello).await.is_err() {
+        return Err(UserError("I can't post in that channel — check my permissions there.".into()).into());
+    }
     logging::set_channel(&ctx.data().db, guild_id(ctx)?, category, channel.id.get() as i64).await?;
     ephemeral(ctx, format!("{} logs go to <#{}>.", category.as_str(), channel.id)).await
 }
