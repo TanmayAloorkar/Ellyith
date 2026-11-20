@@ -103,10 +103,21 @@ fn not_in_guild() -> UserError {
 
 pub async fn require_member(ctx: Context<'_>, user: UserId) -> Result<Member, Error> {
     let guild_id = ctx.guild_id().ok_or_else(not_in_guild)?;
-    guild_id
-        .member(ctx, user)
-        .await
-        .map_err(|_| UserError("That user is not in this server.".into()).into())
+    match guild_id.member(ctx, user).await {
+        Ok(m) => Ok(m),
+        Err(e) if is_absent(&e) => Err(UserError("That user is not in this server.".into()).into()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Discord says the user is not a member: Unknown Member (10007) or Unknown User (10013).
+/// Any other failure (rate limit, 5xx) must not be read as "absent".
+fn is_absent(e: &serenity::Error) -> bool {
+    matches!(e, serenity::Error::Http(serenity::HttpError::UnsuccessfulRequest(r)) if is_unknown_member_code(r.error.code))
+}
+
+fn is_unknown_member_code(code: isize) -> bool {
+    matches!(code, 10007 | 10013)
 }
 
 pub async fn authorize(
@@ -129,7 +140,8 @@ pub async fn authorize(
     let target_facts = match target {
         Some(id) => match guild_id.member(ctx, id).await {
             Ok(m) => Some(member_facts(sctx, guild_id, &m).await?),
-            Err(_) => None,
+            Err(e) if is_absent(&e) => None,
+            Err(e) => return Err(e.into()),
         },
         None => None,
     };
@@ -166,6 +178,16 @@ mod tests {
         let admin = MemberFacts { permissions: Permissions::ADMINISTRATOR, ..facts(1, 5) };
         assert_eq!(can_target(&admin, Some(&MemberFacts { role_ids: vec![7], ..facts(2, 1) }), &bot, &prot), Ok(()));
         assert_eq!(can_target(&facts(1, 5), Some(&MemberFacts { is_owner: true, ..facts(2, 1) }), &bot, &s), Err(Denied::TargetIsOwner));
+    }
+
+    // ErrorResponse/DiscordJsonError are non_exhaustive, so only the code check is testable.
+    #[test]
+    fn absent_only_on_unknown_member_codes() {
+        assert!(is_unknown_member_code(10007));
+        assert!(is_unknown_member_code(10013));
+        assert!(!is_unknown_member_code(0));
+        assert!(!is_unknown_member_code(20028)); // rate limit
+        assert!(!is_absent(&serenity::Error::Other("x")));
     }
 
     #[test]
