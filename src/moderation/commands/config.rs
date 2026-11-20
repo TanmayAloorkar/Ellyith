@@ -1,6 +1,7 @@
+use crate::logging::{self, LogCategory};
 use crate::settings::{self, GuildSettings};
 use crate::{Context, Error, UserError};
-use poise::serenity_prelude::{CreateAllowedMentions, Role};
+use poise::serenity_prelude::{CreateAllowedMentions, GuildChannel, Role};
 
 /// Manage Server only (owner and Administrators pass too).
 async fn manage_guild(ctx: Context<'_>) -> Result<bool, Error> {
@@ -18,7 +19,7 @@ async fn manage_guild(ctx: Context<'_>) -> Result<bool, Error> {
 #[poise::command(
     slash_command,
     guild_only,
-    subcommands("modroles", "protected"),
+    subcommands("modroles", "protected", "logs"),
     default_member_permissions = "MANAGE_GUILD",
     check = "manage_guild"
 )]
@@ -124,5 +125,46 @@ async fn list(ctx: Context<'_>, field: fn(&GuildSettings) -> &Vec<i64>, title: &
             .allowed_mentions(CreateAllowedMentions::new()),
     )
     .await?;
+    Ok(())
+}
+
+/// Per-category log channels.
+#[poise::command(slash_command, guild_only, subcommands("logs_set", "logs_disable", "logs_list"))]
+pub async fn logs(_: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Send a log category to a channel.
+#[poise::command(slash_command, guild_only, rename = "set")]
+pub async fn logs_set(ctx: Context<'_>, category: LogCategory, channel: GuildChannel) -> Result<(), Error> {
+    logging::set_channel(&ctx.data().db, guild_id(ctx)?, category, channel.id.get() as i64).await?;
+    ephemeral(ctx, format!("{} logs go to <#{}>.", category.as_str(), channel.id)).await
+}
+
+/// Stop logging a category.
+#[poise::command(slash_command, guild_only, rename = "disable")]
+pub async fn logs_disable(ctx: Context<'_>, category: LogCategory) -> Result<(), Error> {
+    let msg = if logging::clear(&ctx.data().db, guild_id(ctx)?, category).await? {
+        format!("{} logs disabled.", category.as_str())
+    } else {
+        format!("{} logs were not enabled.", category.as_str())
+    };
+    ephemeral(ctx, msg).await
+}
+
+/// Show log channels.
+#[poise::command(slash_command, guild_only, rename = "list")]
+pub async fn logs_list(ctx: Context<'_>) -> Result<(), Error> {
+    let rows = logging::list(&ctx.data().db, guild_id(ctx)?).await?;
+    let body = if rows.is_empty() {
+        "none".to_string()
+    } else {
+        rows.iter().map(|(c, ch)| format!("{}: <#{ch}>", c.as_str())).collect::<Vec<_>>().join("\n")
+    };
+    ephemeral(ctx, format!("Log channels:\n{body}")).await
+}
+
+async fn ephemeral(ctx: Context<'_>, msg: String) -> Result<(), Error> {
+    ctx.send(poise::CreateReply::default().content(msg).ephemeral(true).allowed_mentions(CreateAllowedMentions::new())).await?;
     Ok(())
 }
