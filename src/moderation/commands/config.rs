@@ -2,6 +2,7 @@ use crate::logging::{self, LogCategory};
 use crate::moderation::cases::CaseKind;
 use crate::duration::{format_duration, parse_duration};
 use crate::moderation::ladder::{self, LadderAction, LadderRule};
+use crate::moderation::nickname::validate_filter_config;
 use crate::moderation::templates;
 use crate::settings::{self, GuildSettings};
 use crate::{Context, Error, UserError};
@@ -23,7 +24,7 @@ async fn manage_guild(ctx: Context<'_>) -> Result<bool, Error> {
 #[poise::command(
     slash_command,
     guild_only,
-    subcommands("modroles", "protected", "logs", "dm", "ladder", "decay"),
+    subcommands("modroles", "protected", "logs", "dm", "ladder", "decay", "nickwords", "nickfilter"),
     default_member_permissions = "MANAGE_GUILD",
     check = "manage_guild"
 )]
@@ -337,6 +338,105 @@ async fn set_decay(ctx: Context<'_>, on: bool, days: Option<i32>) -> Result<(), 
     }
     settings::save(db, &s).await?;
     ephemeral(ctx, if on { format!("Warnings now expire after {} days.", s.warn_decay_days) } else { "Warning decay off.".into() }).await
+}
+
+/// Words that are not allowed in nicknames.
+#[poise::command(slash_command, guild_only, subcommands("nickwords_add", "nickwords_remove", "nickwords_list"))]
+pub async fn nickwords(_: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Forbid a word in nicknames (case-insensitive substring).
+#[poise::command(slash_command, guild_only, rename = "add")]
+pub async fn nickwords_add(ctx: Context<'_>, word: String) -> Result<(), Error> {
+    let word = word.trim().to_lowercase();
+    if word.is_empty() {
+        return Err(UserError("Word cannot be empty.".into()).into());
+    }
+    let db = &ctx.data().db;
+    let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
+    if s.filtered_words.contains(&word) {
+        return ephemeral(ctx, format!("\"{word}\" is already filtered.")).await;
+    }
+    s.filtered_words.push(word.clone());
+    validate_filter_config(&s.nick_fallback, &s.filtered_words, &s.hoist_chars)?;
+    settings::save(db, &s).await?;
+    ephemeral(ctx, format!("Filtered \"{word}\".")).await
+}
+
+/// Stop filtering a word.
+#[poise::command(slash_command, guild_only, rename = "remove")]
+pub async fn nickwords_remove(ctx: Context<'_>, word: String) -> Result<(), Error> {
+    let word = word.trim().to_lowercase();
+    let db = &ctx.data().db;
+    let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
+    let msg = if let Some(i) = s.filtered_words.iter().position(|w| *w == word) {
+        s.filtered_words.remove(i);
+        settings::save(db, &s).await?;
+        format!("Removed \"{word}\".")
+    } else {
+        format!("\"{word}\" was not filtered.")
+    };
+    ephemeral(ctx, msg).await
+}
+
+/// List filtered words.
+#[poise::command(slash_command, guild_only, rename = "list")]
+pub async fn nickwords_list(ctx: Context<'_>) -> Result<(), Error> {
+    let s = settings::get_or_create(&ctx.data().db, guild_id(ctx)?).await?;
+    let body = if s.filtered_words.is_empty() { "none".to_string() } else { s.filtered_words.join(", ") };
+    ephemeral(ctx, format!("Filtered words: {body}")).await
+}
+
+/// Nickname filter settings.
+#[poise::command(slash_command, guild_only, subcommands("nickfilter_on", "nickfilter_off", "nickfilter_hoist", "nickfilter_fallback"))]
+pub async fn nickfilter(_: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Turn the nickname filter on.
+#[poise::command(slash_command, guild_only, rename = "on")]
+pub async fn nickfilter_on(ctx: Context<'_>) -> Result<(), Error> {
+    set_nickfilter(ctx, true).await
+}
+
+/// Turn the nickname filter off.
+#[poise::command(slash_command, guild_only, rename = "off")]
+pub async fn nickfilter_off(ctx: Context<'_>) -> Result<(), Error> {
+    set_nickfilter(ctx, false).await
+}
+
+async fn set_nickfilter(ctx: Context<'_>, on: bool) -> Result<(), Error> {
+    let db = &ctx.data().db;
+    let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
+    s.nick_filter_enabled = on;
+    settings::save(db, &s).await?;
+    ephemeral(ctx, format!("Nickname filter: {}.", if on { "on" } else { "off" })).await
+}
+
+/// Characters a nickname may not start with.
+#[poise::command(slash_command, guild_only, rename = "hoist")]
+pub async fn nickfilter_hoist(ctx: Context<'_>, chars: String) -> Result<(), Error> {
+    let db = &ctx.data().db;
+    let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
+    validate_filter_config(&s.nick_fallback, &s.filtered_words, &chars)?;
+    s.hoist_chars = chars;
+    settings::save(db, &s).await?;
+    ephemeral(ctx, format!("Hoisting characters: {}", s.hoist_chars)).await
+}
+
+/// Nickname given to members whose name is reset.
+#[poise::command(slash_command, guild_only, rename = "fallback")]
+pub async fn nickfilter_fallback(ctx: Context<'_>, name: String) -> Result<(), Error> {
+    if name.chars().count() > 32 {
+        return Err(UserError("Nicknames can be at most 32 characters.".into()).into());
+    }
+    let db = &ctx.data().db;
+    let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
+    validate_filter_config(&name, &s.filtered_words, &s.hoist_chars)?;
+    s.nick_fallback = name;
+    settings::save(db, &s).await?;
+    ephemeral(ctx, format!("Fallback nickname: {}", s.nick_fallback)).await
 }
 
 #[cfg(test)]
