@@ -1,4 +1,6 @@
 use crate::logging::{self, LogCategory};
+use crate::moderation::cases::CaseKind;
+use crate::moderation::templates;
 use crate::settings::{self, GuildSettings};
 use crate::{Context, Error, UserError};
 use poise::serenity_prelude::{CreateAllowedMentions, GuildChannel, Role};
@@ -19,7 +21,7 @@ async fn manage_guild(ctx: Context<'_>) -> Result<bool, Error> {
 #[poise::command(
     slash_command,
     guild_only,
-    subcommands("modroles", "protected", "logs"),
+    subcommands("modroles", "protected", "logs", "dm"),
     default_member_permissions = "MANAGE_GUILD",
     check = "manage_guild"
 )]
@@ -167,4 +169,82 @@ pub async fn logs_list(ctx: Context<'_>) -> Result<(), Error> {
 async fn ephemeral(ctx: Context<'_>, msg: String) -> Result<(), Error> {
     ctx.send(poise::CreateReply::default().content(msg).ephemeral(true).allowed_mentions(CreateAllowedMentions::new())).await?;
     Ok(())
+}
+
+/// Kinds that get a DM (mirrors `templates::dm_kinds()`).
+#[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
+pub enum DmKind {
+    Warn,
+    Timeout,
+    Kick,
+    Ban,
+    Tempban,
+}
+
+impl From<DmKind> for CaseKind {
+    fn from(k: DmKind) -> Self {
+        match k {
+            DmKind::Warn => CaseKind::Warn,
+            DmKind::Timeout => CaseKind::Timeout,
+            DmKind::Kick => CaseKind::Kick,
+            DmKind::Ban => CaseKind::Ban,
+            DmKind::Tempban => CaseKind::Tempban,
+        }
+    }
+}
+
+/// Member DM settings.
+#[poise::command(slash_command, guild_only, subcommands("dm_template", "dm_showmod"))]
+pub async fn dm(_: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Punishment DM templates.
+#[poise::command(
+    slash_command,
+    guild_only,
+    rename = "template",
+    subcommands("template_set", "template_reset", "template_view")
+)]
+pub async fn dm_template(_: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Set a template. Placeholders: {action} {reason} {duration} {server} {case} {moderator}.
+#[poise::command(slash_command, guild_only, rename = "set")]
+pub async fn template_set(ctx: Context<'_>, kind: DmKind, text: String) -> Result<(), Error> {
+    if text.chars().count() > 1500 {
+        return Err(UserError("Template must be 1500 characters or fewer.".into()).into());
+    }
+    templates::set(&ctx.data().db, guild_id(ctx)?, kind.into(), &text).await?;
+    ephemeral(ctx, format!("{} template saved.", CaseKind::from(kind).label())).await
+}
+
+/// Restore the default template.
+#[poise::command(slash_command, guild_only, rename = "reset")]
+pub async fn template_reset(ctx: Context<'_>, kind: DmKind) -> Result<(), Error> {
+    templates::reset(&ctx.data().db, guild_id(ctx)?, kind.into()).await?;
+    ephemeral(ctx, format!("{} template reset to default.", CaseKind::from(kind).label())).await
+}
+
+/// Show the template in use.
+#[poise::command(slash_command, guild_only, rename = "view")]
+pub async fn template_view(ctx: Context<'_>, kind: DmKind) -> Result<(), Error> {
+    let ck = CaseKind::from(kind);
+    let (text, tag) = match templates::get(&ctx.data().db, guild_id(ctx)?, ck).await? {
+        Some(t) => (t, "custom"),
+        None => (templates::default_template(ck).to_string(), "default"),
+    };
+    // Defang backticks so the template cannot break out of the code block.
+    ephemeral(ctx, format!("{} template ({tag}):\n```\n{}\n```", ck.label(), text.replace("```", "'''"))).await
+}
+
+/// Show the moderator's name in DMs.
+#[poise::command(slash_command, guild_only, rename = "showmod")]
+pub async fn dm_showmod(ctx: Context<'_>, show: bool) -> Result<(), Error> {
+    let db = &ctx.data().db;
+    let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
+    s.dm_show_moderator = show;
+    settings::save(db, &s).await?;
+    ephemeral(ctx, format!("Moderator name in DMs: {}.", if show { "on" } else { "off" })).await
 }
