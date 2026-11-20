@@ -97,6 +97,7 @@ mod tests {
         assert_eq!(render(default_template(CaseKind::Timeout), &v), "You were timed out in **Den** for 1h.\nReason: r\nCase #7");
         assert_eq!(render(default_template(CaseKind::Tempban), &v), "You were banned from **Den** for 1h.\nReason: r\nCase #7");
         assert_eq!(render(default_template(CaseKind::Timeout), &vars()), "You were timed out in **Den** for .\nReason: r\nCase #7");
+        assert_eq!(render(default_template(CaseKind::Tempban), &vars()), "You were banned from **Den** for .\nReason: r\nCase #7");
         assert_eq!(render(default_template(CaseKind::Kick), &v), "You were kicked from **Den**.\nReason: r\nCase #7");
         assert_eq!(render(default_template(CaseKind::Ban), &v), "You were banned from **Den**.\nReason: r\nCase #7");
     }
