@@ -194,19 +194,8 @@ impl From<DmKind> for CaseKind {
 }
 
 /// Member DM settings.
-#[poise::command(slash_command, guild_only, subcommands("dm_template", "dm_showmod"))]
+#[poise::command(slash_command, guild_only, subcommands("template_set", "template_reset", "template_view", "dm_showmod"))]
 pub async fn dm(_: Context<'_>) -> Result<(), Error> {
-    Ok(())
-}
-
-/// Punishment DM templates.
-#[poise::command(
-    slash_command,
-    guild_only,
-    rename = "template",
-    subcommands("template_set", "template_reset", "template_view")
-)]
-pub async fn dm_template(_: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
@@ -247,4 +236,16 @@ pub async fn dm_showmod(ctx: Context<'_>, show: bool) -> Result<(), Error> {
     s.dm_show_moderator = show;
     settings::save(db, &s).await?;
     ephemeral(ctx, format!("Moderator name in DMs: {}.", if show { "on" } else { "off" })).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use poise::ChoiceParameter;
+
+    #[test]
+    fn dm_kind_matches_dm_kinds() {
+        let mapped: Vec<CaseKind> = (0..DmKind::list().len()).map(|i| DmKind::from_index(i).unwrap().into()).collect();
+        assert_eq!(mapped, templates::dm_kinds());
+    }
 }

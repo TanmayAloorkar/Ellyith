@@ -86,4 +86,30 @@ mod tests {
         assert_eq!(render("Hi", &TemplateVars { moderator: Some("Tan"), ..v }), "Hi\nModerator: Tan");
         assert_eq!(render("{reason}", &TemplateVars { reason: &"x".repeat(3000), ..v }).chars().count(), 2000);
     }
+
+    fn vars() -> TemplateVars<'static> {
+        TemplateVars { action: "A", reason: "r", duration: None, server: "Den", case_number: 7, moderator: None }
+    }
+
+    #[test]
+    fn duration_and_exact_defaults() {
+        let v = TemplateVars { duration: Some("1h"), ..vars() };
+        assert_eq!(render(default_template(CaseKind::Timeout), &v), "You were timed out in **Den** for 1h.\nReason: r\nCase #7");
+        assert_eq!(render(default_template(CaseKind::Tempban), &v), "You were banned from **Den** for 1h.\nReason: r\nCase #7");
+        assert_eq!(render(default_template(CaseKind::Timeout), &vars()), "You were timed out in **Den** for .\nReason: r\nCase #7");
+        assert_eq!(render(default_template(CaseKind::Kick), &v), "You were kicked from **Den**.\nReason: r\nCase #7");
+        assert_eq!(render(default_template(CaseKind::Ban), &v), "You were banned from **Den**.\nReason: r\nCase #7");
+    }
+
+    #[test]
+    fn moderator_not_appended_when_placeholder_present() {
+        let v = TemplateVars { moderator: Some("Tan"), ..vars() };
+        assert_eq!(render("By {moderator}", &v), "By Tan");
+    }
+
+    #[test]
+    fn reason_cannot_inject_placeholders() {
+        let v = TemplateVars { reason: "{moderator} {server}", moderator: Some("Tan"), ..vars() };
+        assert_eq!(render("{reason}", &v), "{moderator} {server}\nModerator: Tan");
+    }
 }
