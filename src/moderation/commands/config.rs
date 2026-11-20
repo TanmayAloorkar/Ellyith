@@ -1,5 +1,7 @@
 use crate::logging::{self, LogCategory};
 use crate::moderation::cases::CaseKind;
+use crate::duration::{format_duration, parse_duration};
+use crate::moderation::ladder::{self, LadderAction, LadderRule};
 use crate::moderation::templates;
 use crate::settings::{self, GuildSettings};
 use crate::{Context, Error, UserError};
@@ -21,7 +23,7 @@ async fn manage_guild(ctx: Context<'_>) -> Result<bool, Error> {
 #[poise::command(
     slash_command,
     guild_only,
-    subcommands("modroles", "protected", "logs", "dm"),
+    subcommands("modroles", "protected", "logs", "dm", "ladder", "decay"),
     default_member_permissions = "MANAGE_GUILD",
     check = "manage_guild"
 )]
@@ -166,7 +168,7 @@ pub async fn logs_list(ctx: Context<'_>) -> Result<(), Error> {
     ephemeral(ctx, format!("Log channels:\n{body}")).await
 }
 
-async fn ephemeral(ctx: Context<'_>, msg: String) -> Result<(), Error> {
+pub(crate) async fn ephemeral(ctx: Context<'_>, msg: String) -> Result<(), Error> {
     ctx.send(poise::CreateReply::default().content(msg).ephemeral(true).allowed_mentions(CreateAllowedMentions::new())).await?;
     Ok(())
 }
@@ -236,6 +238,105 @@ pub async fn dm_showmod(ctx: Context<'_>, show: bool) -> Result<(), Error> {
     s.dm_show_moderator = show;
     settings::save(db, &s).await?;
     ephemeral(ctx, format!("Moderator name in DMs: {}.", if show { "on" } else { "off" })).await
+}
+
+#[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
+pub enum LadderChoice {
+    Timeout,
+    Kick,
+    Tempban,
+    Ban,
+}
+
+impl From<LadderChoice> for LadderAction {
+    fn from(c: LadderChoice) -> Self {
+        match c {
+            LadderChoice::Timeout => LadderAction::Timeout,
+            LadderChoice::Kick => LadderAction::Kick,
+            LadderChoice::Tempban => LadderAction::Tempban,
+            LadderChoice::Ban => LadderAction::Ban,
+        }
+    }
+}
+
+/// Automatic punishments for reaching a warning count.
+#[poise::command(slash_command, guild_only, subcommands("ladder_set", "ladder_remove", "ladder_list"))]
+pub async fn ladder(_: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Set the action taken at an exact warning count.
+#[poise::command(slash_command, guild_only, rename = "set")]
+pub async fn ladder_set(ctx: Context<'_>, warns: i32, action: LadderChoice, duration: Option<String>) -> Result<(), Error> {
+    let duration_secs = duration.as_deref().map(parse_duration).transpose()?.map(|d| d.num_seconds());
+    let rule = LadderRule { warn_count: warns, action: action.into(), duration_secs };
+    ladder::validate_rule(&rule)?;
+    ladder::set_rule(&ctx.data().db, guild_id(ctx)?, &rule).await?;
+    ephemeral(ctx, format!("At {warns} warnings: {}.", describe_rule(&rule))).await
+}
+
+/// Remove the rule for a warning count.
+#[poise::command(slash_command, guild_only, rename = "remove")]
+pub async fn ladder_remove(ctx: Context<'_>, warns: i32) -> Result<(), Error> {
+    let msg = if ladder::remove_rule(&ctx.data().db, guild_id(ctx)?, warns).await? {
+        format!("Removed the rule for {warns} warnings.")
+    } else {
+        format!("No rule for {warns} warnings.")
+    };
+    ephemeral(ctx, msg).await
+}
+
+/// Show the ladder.
+#[poise::command(slash_command, guild_only, rename = "list")]
+pub async fn ladder_list(ctx: Context<'_>) -> Result<(), Error> {
+    let rules = ladder::list_rules(&ctx.data().db, guild_id(ctx)?).await?;
+    let body = if rules.is_empty() {
+        "none".to_string()
+    } else {
+        rules.iter().map(|r| format!("{} warnings: {}", r.warn_count, describe_rule(r))).collect::<Vec<_>>().join("
+")
+    };
+    ephemeral(ctx, format!("Ladder:
+{body}")).await
+}
+
+fn describe_rule(r: &LadderRule) -> String {
+    match r.duration_secs {
+        Some(s) => format!("{} for {}", r.action.as_str(), format_duration(chrono::Duration::seconds(s))),
+        None => r.action.as_str().to_string(),
+    }
+}
+
+/// Warnings expire after a number of days.
+#[poise::command(slash_command, guild_only, subcommands("decay_on", "decay_off"))]
+pub async fn decay(_: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Turn warning decay on.
+#[poise::command(slash_command, guild_only, rename = "on")]
+pub async fn decay_on(ctx: Context<'_>, days: i32) -> Result<(), Error> {
+    if !(1..=365).contains(&days) {
+        return Err(UserError("Days must be between 1 and 365.".into()).into());
+    }
+    set_decay(ctx, true, Some(days)).await
+}
+
+/// Turn warning decay off.
+#[poise::command(slash_command, guild_only, rename = "off")]
+pub async fn decay_off(ctx: Context<'_>) -> Result<(), Error> {
+    set_decay(ctx, false, None).await
+}
+
+async fn set_decay(ctx: Context<'_>, on: bool, days: Option<i32>) -> Result<(), Error> {
+    let db = &ctx.data().db;
+    let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
+    s.warn_decay_enabled = on;
+    if let Some(d) = days {
+        s.warn_decay_days = d;
+    }
+    settings::save(db, &s).await?;
+    ephemeral(ctx, if on { format!("Warnings now expire after {} days.", s.warn_decay_days) } else { "Warning decay off.".into() }).await
 }
 
 #[cfg(test)]

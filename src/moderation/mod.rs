@@ -3,3 +3,4 @@ pub mod perms;
 pub mod commands;
 pub mod cases;
 pub mod templates;
+pub mod actions;

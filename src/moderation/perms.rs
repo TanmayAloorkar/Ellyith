@@ -112,7 +112,7 @@ pub async fn require_member(ctx: Context<'_>, user: UserId) -> Result<Member, Er
 
 /// Discord says the user is not a member: Unknown Member (10007) or Unknown User (10013).
 /// Any other failure (rate limit, 5xx) must not be read as "absent".
-fn is_absent(e: &serenity::Error) -> bool {
+pub(crate) fn is_absent(e: &serenity::Error) -> bool {
     matches!(e, serenity::Error::Http(serenity::HttpError::UnsuccessfulRequest(r)) if is_unknown_member_code(r.error.code))
 }
 
