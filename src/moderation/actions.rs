@@ -7,7 +7,7 @@ use crate::moderation::templates::{self, dm_kinds, TemplateVars};
 use crate::text::truncate;
 use crate::{settings, Data, Error, UserError};
 use chrono::{Duration, Utc};
-use poise::serenity_prelude::{self as serenity, CreateEmbed, CreateMessage, EditMember, GuildId, Timestamp, UserId};
+use poise::serenity_prelude::{self as serenity, CreateEmbed, CreateMessage, EditMember, GuildId, Permissions, Timestamp, UserId};
 
 pub struct ActionRequest {
     pub guild_id: GuildId,
@@ -35,6 +35,44 @@ fn ladder_request(guild_id: GuildId, target: UserId, rule: &LadderRule, warns: i
         duration: rule.duration_secs.map(Duration::seconds),
         ban_delete_days: 0,
     }
+}
+
+/// Refuse before any DM when Discord would reject the action anyway.
+fn bot_can_apply(kind: CaseKind, bot: Permissions, target_is_admin_or_owner: bool) -> Result<(), &'static str> {
+    let need = match kind {
+        CaseKind::Timeout | CaseKind::Untimeout => Permissions::MODERATE_MEMBERS,
+        CaseKind::Kick => Permissions::KICK_MEMBERS,
+        CaseKind::Ban | CaseKind::Unban => Permissions::BAN_MEMBERS,
+        _ => Permissions::empty(),
+    };
+    if !bot.contains(need) {
+        return Err("I don't have permission to do that.");
+    }
+    if kind == CaseKind::Timeout && target_is_admin_or_owner {
+        return Err("Discord does not allow timing out administrators.");
+    }
+    Ok(())
+}
+
+async fn precheck(ctx: &serenity::Context, req: &ActionRequest) -> Result<(), Error> {
+    if req.kind == CaseKind::Warn {
+        return Ok(());
+    }
+    let bot_id = ctx.cache.current_user().id;
+    let bot_m = req.guild_id.member(ctx, bot_id).await?;
+    let bot = member_facts(ctx, req.guild_id, &bot_m).await?;
+    let mut target_admin = false;
+    if req.kind == CaseKind::Timeout {
+        match req.guild_id.member(ctx, req.target).await {
+            Ok(m) => {
+                let f = member_facts(ctx, req.guild_id, &m).await?;
+                target_admin = f.is_owner || f.permissions.contains(Permissions::ADMINISTRATOR);
+            }
+            Err(e) if is_absent(&e) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    bot_can_apply(req.kind, bot.permissions, target_admin).map_err(|m| UserError(m.into()).into())
 }
 
 fn http_error_message(status: Option<u16>) -> &'static str {
@@ -89,6 +127,7 @@ pub async fn execute(ctx: &serenity::Context, data: &Data, req: ActionRequest) -
     if req.kind == CaseKind::Tempban {
         return Err(UserError("Tempban is not available yet.".into()).into());
     }
+    precheck(ctx, &req).await?;
     let gid = req.guild_id.get() as i64;
     let mut number = None;
     let mut dm_failed = false;
@@ -200,6 +239,24 @@ mod tests {
         let kick = LadderRule { warn_count: 5, action: LadderAction::Kick, duration_secs: None };
         let r = ladder_request(GuildId::new(1), UserId::new(2), &kick, 5);
         assert_eq!((r.kind, r.duration), (CaseKind::Kick, None));
+    }
+
+    #[test]
+    fn bot_permission_gate() {
+        let all = Permissions::all();
+        for (k, p) in [
+            (CaseKind::Kick, Permissions::KICK_MEMBERS),
+            (CaseKind::Ban, Permissions::BAN_MEMBERS),
+            (CaseKind::Unban, Permissions::BAN_MEMBERS),
+            (CaseKind::Timeout, Permissions::MODERATE_MEMBERS),
+            (CaseKind::Untimeout, Permissions::MODERATE_MEMBERS),
+        ] {
+            assert_eq!(bot_can_apply(k, all - p, false), Err("I don't have permission to do that."), "{k:?}");
+            assert_eq!(bot_can_apply(k, p, false), Ok(()), "{k:?}");
+        }
+        assert_eq!(bot_can_apply(CaseKind::Warn, Permissions::empty(), false), Ok(()));
+        assert!(bot_can_apply(CaseKind::Timeout, all, true).is_err());
+        assert_eq!(bot_can_apply(CaseKind::Ban, all, true), Ok(()));
     }
 
     #[test]
