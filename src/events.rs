@@ -1,4 +1,5 @@
 use crate::moderation::jobs::{self, JobKind};
+use crate::logging::messages;
 use crate::moderation::nickname;
 use crate::{Data, Error};
 use poise::serenity_prelude as serenity;
@@ -31,6 +32,17 @@ pub async fn event_handler(
                     },
                 }
             }
+        }
+        serenity::FullEvent::Message { new_message } => messages::on_message(data, new_message),
+        serenity::FullEvent::MessageUpdate { new, event, .. } => {
+            messages::on_update(&ctx.http, data, new.as_ref(), event).await
+        }
+        serenity::FullEvent::MessageDelete { channel_id, deleted_message_id, guild_id } => {
+            messages::on_delete(&ctx.http, data, channel_id.get(), deleted_message_id.get(), *guild_id).await
+        }
+        serenity::FullEvent::MessageDeleteBulk { channel_id, multiple_deleted_messages_ids, guild_id } => {
+            let ids: Vec<u64> = multiple_deleted_messages_ids.iter().map(|i| i.get()).collect();
+            messages::on_bulk_delete(&ctx.http, data, channel_id.get(), &ids, *guild_id).await
         }
         _ => {}
     }
