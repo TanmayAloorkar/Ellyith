@@ -1,0 +1,177 @@
+use crate::settings::{self, GuildSettings};
+use crate::{Context, Error, UserError};
+use poise::serenity_prelude::{self as serenity, GuildId, Member, Permissions, UserId};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemberFacts {
+    pub user_id: u64,
+    pub is_owner: bool,
+    pub permissions: serenity::Permissions,
+    pub role_ids: Vec<u64>,
+    pub top_role_position: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Denied {
+    NotModerator,
+    TargetIsSelf,
+    TargetIsOwner,
+    TargetProtected,
+    TargetNotBelowYou,
+    TargetNotBelowBot,
+}
+
+impl Denied {
+    pub fn message(&self) -> &'static str {
+        match self {
+            Denied::NotModerator => "You don't have permission to use this command.",
+            Denied::TargetIsSelf => "You can't do that to yourself.",
+            Denied::TargetIsOwner => "You can't do that to the server owner.",
+            Denied::TargetProtected => "That user has a protected role.",
+            Denied::TargetNotBelowYou => "That user's highest role is not below yours.",
+            Denied::TargetNotBelowBot => "That user's highest role is not below mine.",
+        }
+    }
+}
+
+fn has_role(m: &MemberFacts, roles: &[i64]) -> bool {
+    m.role_ids.iter().any(|r| roles.contains(&(*r as i64)))
+}
+
+fn is_admin(m: &MemberFacts) -> bool {
+    m.is_owner || m.permissions.contains(Permissions::ADMINISTRATOR)
+}
+
+pub fn can_moderate(invoker: &MemberFacts, s: &GuildSettings, required: Permissions) -> bool {
+    is_admin(invoker) || invoker.permissions.contains(required) || has_role(invoker, &s.mod_roles)
+}
+
+pub fn can_target(
+    invoker: &MemberFacts,
+    target: Option<&MemberFacts>,
+    bot: &MemberFacts,
+    s: &GuildSettings,
+) -> Result<(), Denied> {
+    let Some(t) = target else { return Ok(()) };
+    if t.user_id == invoker.user_id {
+        return Err(Denied::TargetIsSelf);
+    }
+    if t.is_owner {
+        return Err(Denied::TargetIsOwner);
+    }
+    if !is_admin(invoker) && has_role(t, &s.protected_roles) {
+        return Err(Denied::TargetProtected);
+    }
+    if !invoker.is_owner && t.top_role_position >= invoker.top_role_position {
+        return Err(Denied::TargetNotBelowYou);
+    }
+    if t.top_role_position >= bot.top_role_position {
+        return Err(Denied::TargetNotBelowBot);
+    }
+    Ok(())
+}
+
+pub fn is_exempt_from_auto(m: &MemberFacts, s: &GuildSettings) -> bool {
+    is_admin(m) || has_role(m, &s.protected_roles)
+}
+
+pub async fn member_facts(
+    ctx: &serenity::Context,
+    guild_id: GuildId,
+    member: &Member,
+) -> Result<MemberFacts, Error> {
+    let g = ctx.cache.guild(guild_id).ok_or("guild not in cache")?;
+    let top = member
+        .roles
+        .iter()
+        .filter_map(|r| g.roles.get(r))
+        .map(|r| r.position)
+        .max()
+        .unwrap_or(0);
+    Ok(MemberFacts {
+        user_id: member.user.id.get(),
+        is_owner: g.owner_id == member.user.id,
+        permissions: g.member_permissions(member),
+        role_ids: member.roles.iter().map(|r| r.get()).collect(),
+        top_role_position: top,
+    })
+}
+
+fn not_in_guild() -> UserError {
+    UserError("This command only works in a server.".into())
+}
+
+pub async fn require_member(ctx: Context<'_>, user: UserId) -> Result<Member, Error> {
+    let guild_id = ctx.guild_id().ok_or_else(not_in_guild)?;
+    guild_id
+        .member(ctx, user)
+        .await
+        .map_err(|_| UserError("That user is not in this server.".into()).into())
+}
+
+pub async fn authorize(
+    ctx: Context<'_>,
+    required: Permissions,
+    target: Option<UserId>,
+) -> Result<GuildSettings, Error> {
+    let guild_id = ctx.guild_id().ok_or_else(not_in_guild)?;
+    let s = settings::get_or_create(&ctx.data().db, guild_id.get() as i64).await?;
+    let sctx = ctx.serenity_context();
+    let invoker_m = require_member(ctx, ctx.author().id).await?;
+    let invoker = member_facts(sctx, guild_id, &invoker_m).await?;
+    if !can_moderate(&invoker, &s, required) {
+        return Err(UserError(Denied::NotModerator.message().into()).into());
+    }
+    let bot_id = sctx.cache.current_user().id;
+    let bot_m = require_member(ctx, bot_id).await?;
+    let bot = member_facts(sctx, guild_id, &bot_m).await?;
+    // Target not in server: nothing to rank-check (e.g. banning an absent user).
+    let target_facts = match target {
+        Some(id) => match guild_id.member(ctx, id).await {
+            Ok(m) => Some(member_facts(sctx, guild_id, &m).await?),
+            Err(_) => None,
+        },
+        None => None,
+    };
+    can_target(&invoker, target_facts.as_ref(), &bot, &s).map_err(|d| UserError(d.message().into()))?;
+    Ok(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn facts(id: u64, top: u16) -> MemberFacts {
+        MemberFacts { user_id: id, is_owner: false, permissions: Permissions::empty(), role_ids: vec![], top_role_position: top }
+    }
+
+    #[test]
+    fn moderate() {
+        let s = GuildSettings::defaults(1);
+        assert!(!can_moderate(&facts(1, 5), &s, Permissions::BAN_MEMBERS));
+        assert!(can_moderate(&MemberFacts { permissions: Permissions::BAN_MEMBERS, ..facts(1, 5) }, &s, Permissions::BAN_MEMBERS));
+        assert!(can_moderate(&MemberFacts { role_ids: vec![42], ..facts(1, 5) }, &GuildSettings { mod_roles: vec![42], ..s.clone() }, Permissions::BAN_MEMBERS));
+    }
+
+    #[test]
+    fn target() {
+        let s = GuildSettings::defaults(1);
+        let bot = facts(99, 10);
+        assert_eq!(can_target(&facts(1, 5), None, &bot, &s), Ok(()));
+        assert_eq!(can_target(&facts(1, 5), Some(&facts(1, 5)), &bot, &s), Err(Denied::TargetIsSelf));
+        assert_eq!(can_target(&facts(1, 5), Some(&facts(2, 5)), &bot, &s), Err(Denied::TargetNotBelowYou));
+        assert_eq!(can_target(&facts(1, 20), Some(&facts(2, 12)), &bot, &s), Err(Denied::TargetNotBelowBot));
+        let prot = GuildSettings { protected_roles: vec![7], ..s.clone() };
+        assert_eq!(can_target(&facts(1, 5), Some(&MemberFacts { role_ids: vec![7], ..facts(2, 1) }), &bot, &prot), Err(Denied::TargetProtected));
+        let admin = MemberFacts { permissions: Permissions::ADMINISTRATOR, ..facts(1, 5) };
+        assert_eq!(can_target(&admin, Some(&MemberFacts { role_ids: vec![7], ..facts(2, 1) }), &bot, &prot), Ok(()));
+        assert_eq!(can_target(&facts(1, 5), Some(&MemberFacts { is_owner: true, ..facts(2, 1) }), &bot, &s), Err(Denied::TargetIsOwner));
+    }
+
+    #[test]
+    fn exempt() {
+        let prot = GuildSettings { protected_roles: vec![7], ..GuildSettings::defaults(1) };
+        assert!(is_exempt_from_auto(&MemberFacts { role_ids: vec![7], ..facts(2, 1) }, &prot));
+        assert!(!is_exempt_from_auto(&facts(2, 1), &prot));
+    }
+}

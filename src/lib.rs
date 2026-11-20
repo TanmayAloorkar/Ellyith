@@ -22,7 +22,7 @@ impl std::fmt::Display for UserError {
 impl std::error::Error for UserError {}
 
 pub fn all_commands() -> Vec<poise::Command<Data, Error>> {
-    vec![ping()]
+    vec![ping(), moderation::commands::config::config()]
 }
 
 /// Check that the bot is alive.
