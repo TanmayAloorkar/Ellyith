@@ -20,15 +20,15 @@ The output is `target/x86_64-unknown-linux-musl/release/aio-bot`, a static, stri
    - `GUILD_ID`: the ID of the live server (enable Developer Mode in Discord, right-click the server, Copy Server ID).
    - `RUST_LOG=info`
 4. Upload `aio-bot` to the server's file manager.
-5. Set the startup command to `./aio-bot`. If the panel has no executable bit option and the console says permission denied, run `chmod +x aio-bot` from the console, if offered, or re-upload with execute permission.
+5. Set the startup command to `chmod +x ./aio-bot && ./aio-bot`. A binary uploaded from Windows has no executable bit, so this sets it on every start. Alternatively, run `chmod +x ./aio-bot` once in the panel console if it has a shell, and use `./aio-bot` as the startup command. Wispbyte's exact panel behaviour for this is unverified.
 
 Never commit or paste real values of these variables into the repo.
 
 ## 3. First start
 
-Start the server and watch the console. Migrations run automatically on startup. Look for the log line containing "connected as"; that means the bot is logged in to Discord.
+Start the server and watch the console. Migrations run automatically on startup. Look for the log line containing "connected as"; that means the bot is logged in to Discord. Startup failures show as panics with `failed to connect to the database` (check `DATABASE_URL`), `failed to run migrations`, or `failed to build the Discord client` (check `DISCORD_TOKEN`).
 
-If the console shows `Exec format error`, the host is ARM. Add the target and rebuild:
+If the console shows `Exec format error`, first confirm the uploaded file is the musl ELF built in step 1 (about 19 MB; `file aio-bot` should say "x86-64, statically linked"). If it is, the host is probably ARM. This path is untested. Add the target and rebuild:
 
     rustup target add aarch64-unknown-linux-musl
     cargo zigbuild --release --target aarch64-unknown-linux-musl
@@ -43,7 +43,7 @@ Invite the bot with the permission integer 1099666910342. It covers: View Channe
 
     https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot%20applications.commands&permissions=1099666910342
 
-After the invite, open Server Settings, Roles, and drag the bot's role above every role of the members it must moderate. Discord blocks kicks, bans, timeouts and nickname changes on members whose top role is at or above the bot's.
+After the invite, open Server Settings, Roles, and drag the bot's role above the highest role of each member it must moderate. Discord blocks kicks, bans, timeouts and nickname changes on members whose top role is at or above the bot's.
 
 ## 5. Smoke test
 
