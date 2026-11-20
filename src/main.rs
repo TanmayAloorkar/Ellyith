@@ -34,24 +34,28 @@ async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
 async fn main() {
     let _ = dotenvy::dotenv();
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
 
     let token = require_env("DISCORD_TOKEN");
     let database_url = require_env("DATABASE_URL");
-    let guild_id: u64 = require_env("GUILD_ID")
-        .parse()
-        .unwrap_or_else(|_| {
-            eprintln!("GUILD_ID must be a numeric guild ID");
-            std::process::exit(1);
-        });
+    let guild_id: u64 = require_env("GUILD_ID").parse().unwrap_or_else(|_| {
+        eprintln!("GUILD_ID must be a numeric guild ID");
+        std::process::exit(1);
+    });
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&database_url)
         .await
         .expect("failed to connect to the database");
-    sqlx::migrate!("./migrations").run(&pool).await.expect("failed to run migrations");
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("failed to run migrations");
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
