@@ -337,6 +337,7 @@ fn is_gone(e: &serenity::Error) -> bool {
 /// Post the moderation panel in a channel, replacing the previous one.
 #[poise::command(slash_command, guild_only)]
 pub async fn panel(ctx: Context<'_>, #[channel_types("Text", "News")] channel: GuildChannel) -> Result<(), Error> {
+    ctx.defer_ephemeral().await?;
     let db = &ctx.data().db;
     let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
     let old = s.panel_channel_id.zip(s.panel_message_id);

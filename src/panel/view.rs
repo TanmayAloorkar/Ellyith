@@ -170,8 +170,7 @@ pub fn category(c: Category) -> Views {
             let mut e = CreateEmbed::new().colour(Tone::Config.colour()).title("Config").description("Bot settings. Changes apply right away.");
             let mut buttons = vec![];
             for (name, items) in CONFIG {
-                e = e.field(*name, items.iter().map(|(_, l, d)| line(l, d)).collect::<Vec<_>>().join("
-"), false);
+                e = e.field(*name, items.iter().map(|(_, l, d)| line(l, d)).collect::<Vec<_>>().join("\n"), false);
                 buttons.extend(items.iter().map(|(p, l, _)| config_button(ConfigId::Open(*p), l, S)));
             }
             // Four per row, Back last: matches the mockup.

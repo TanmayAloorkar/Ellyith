@@ -46,6 +46,7 @@ pub async fn set_nick(inv: &Invoker<'_>, user: UserId, nick: Option<String>, rea
         Some(r) => format!("Nickname by {}: {r}", inv.user.name),
         None => format!("Nickname by {}", inv.user.name),
     };
+    let audit = crate::text::truncate(&audit, 512);
     inv.guild_id
         .edit_member(inv.ctx, user, EditMember::new().nickname(nick.as_deref().unwrap_or("")).audit_log_reason(&audit))
         .await?;

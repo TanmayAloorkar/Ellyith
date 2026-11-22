@@ -73,9 +73,8 @@ fn describe(amount: &PurgeAmount) -> String {
     }
 }
 
-/// Manage Messages and Read Message History in the channel, from the cache.
-fn channel_perms_ok(inv: &Invoker<'_>, channel: ChannelId, member: &Member) -> bool {
-    let need = Permissions::MANAGE_MESSAGES | Permissions::READ_MESSAGE_HISTORY;
+/// `need` in the channel, from the cache.
+fn channel_perms_ok(inv: &Invoker<'_>, channel: ChannelId, member: &Member, need: Permissions) -> bool {
     inv.ctx.cache.guild(inv.guild_id).is_some_and(|g| g.channels.get(&channel).is_some_and(|c| g.user_permissions_in(c, member).contains(need)))
 }
 
@@ -84,12 +83,12 @@ pub async fn run(inv: &Invoker<'_>, channel: ChannelId, amount: PurgeAmount, mem
     let mod_m = require_member(inv, inv.user.id).await?;
     let mod_f = member_facts(inv.ctx, inv.guild_id, &mod_m).await?;
     let bypass = mod_f.is_owner || mod_f.permissions.contains(Permissions::ADMINISTRATOR);
-    if !bypass && !channel_perms_ok(inv, channel, &mod_m) {
-        return Err(UserError("You need Manage Messages and Read Message History in that channel.".into()).into());
+    if !bypass && !channel_perms_ok(inv, channel, &mod_m, Permissions::VIEW_CHANNEL) {
+        return Err(UserError("You need to be able to see that channel.".into()).into());
     }
     let bot_id = inv.ctx.cache.current_user().id;
     let bot_m = require_member(inv, bot_id).await?;
-    if !channel_perms_ok(inv, channel, &bot_m) {
+    if !channel_perms_ok(inv, channel, &bot_m, Permissions::MANAGE_MESSAGES | Permissions::READ_MESSAGE_HISTORY) {
         return Err(UserError("I don't have permission to do that.".into()).into());
     }
     let now = Utc::now();
@@ -167,14 +166,18 @@ pub async fn run(inv: &Invoker<'_>, channel: ChannelId, amount: PurgeAmount, mem
         return Ok(done(Tone::Channels, &format!("🧹 Nothing to purge in #{name}"), &lines, None));
     }
     send_log(&inv.ctx.http, &inv.data.db, inv.guild_id, LogCategory::ModActions, log).await;
+    let mut lines = vec![("Deleted", deleted.to_string())];
     if let Some(e) = failure {
         let msg = match e.downcast_ref::<UserError>() {
             Some(u) => u.0.clone(),
             None => "Discord rejected that action.".into(),
         };
-        return Err(UserError(format!("Stopped after deleting {deleted} message(s): {msg}")).into());
+        lines.push(("Stopped early", msg));
+        if !skipped.is_empty() {
+            lines.push(("Skipped", skipped));
+        }
+        return Ok(done(Tone::Channels, &format!("🧹 Purge stopped early in #{name}"), &lines, None));
     }
-    let mut lines = vec![("Deleted", deleted.to_string())];
     if !skipped.is_empty() {
         lines.push(("Skipped", skipped));
     }

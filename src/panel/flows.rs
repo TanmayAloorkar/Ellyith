@@ -75,10 +75,6 @@ fn needs_member(a: Action) -> bool {
     !matches!(a, Action::Unban | Action::Purge | Action::CaseView | Action::CaseReason | Action::CaseRemove | Action::NoteView | Action::NoteDelete)
 }
 
-fn dm_possible(a: Action) -> bool {
-    matches!(a, Action::Warn | Action::Timeout | Action::Kick | Action::Tempban | Action::Ban)
-}
-
 // ---- running an action ----
 
 /// Run the core for `a`. `v` holds the pop-up values in input order (empty when the action has no pop-up).
@@ -103,7 +99,12 @@ async fn exec(inv: &Invoker<'_>, a: Action, user: Option<UserId>, chan: Option<C
         }
         Action::Ban => punish(inv, CaseKind::Ban, member()?, reason(1), None, parse_delete_days(val(0))?).await,
         Action::Unban => punish(inv, CaseKind::Unban, parse_user_id(val(0))?, reason(1), None, 0).await,
-        Action::NickSet => set_nick(inv, member()?, Some(val(0).to_string()), reason(1)).await,
+        Action::NickSet => {
+            if val(0).is_empty() {
+                return Err(bad("Enter a nickname.").into());
+            }
+            set_nick(inv, member()?, Some(val(0).to_string()), reason(1)).await
+        }
         Action::NickReset => set_nick(inv, member()?, None, reason(0)).await,
         Action::Disconnect => voice(CaseKind::VoiceDisconnect).await,
         Action::VoiceMute => voice(CaseKind::VoiceMute).await,
@@ -141,7 +142,7 @@ pub(super) fn outcome_of(what: impl std::fmt::Debug, dm: bool, res: Result<Creat
 }
 
 fn outcome(a: Action, res: Result<CreateEmbed, Error>) -> CreateEmbed {
-    outcome_of(a, dm_possible(a), res)
+    outcome_of(a, false, res)
 }
 
 // ---- response builders ----

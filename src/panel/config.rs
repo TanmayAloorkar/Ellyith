@@ -59,6 +59,27 @@ fn config_embed(title: &str, desc: String) -> CreateEmbed {
     CreateEmbed::new().colour(Tone::Config.colour()).title(title).description(desc)
 }
 
+const WORDS_MAX: usize = 4000;
+const HOIST_MAX: usize = 32;
+const ROLES_MAX: usize = 25;
+
+fn too_big(slash: &str) -> UserError {
+    bad(&format!("That list is too long to edit here. Use {slash} instead."))
+}
+
+/// Refuse a pop-up whose pre-filled value would be cut (saving it would drop the rest).
+fn form_fits(f: Form, s: &GuildSettings) -> Result<(), UserError> {
+    match f {
+        Form::Words if s.filtered_words.join(", ").chars().count() > WORDS_MAX => Err(too_big("/config nickwords")),
+        Form::Hoist if s.hoist_chars.chars().count() > HOIST_MAX => Err(too_big("/config nickfilter hoist")),
+        _ => Ok(()),
+    }
+}
+
+fn roles_fit(len: usize, slash: &str) -> Result<(), UserError> {
+    if len > ROLES_MAX { Err(too_big(slash)) } else { Ok(()) }
+}
+
 fn cut(s: String, max: usize) -> String {
     s.chars().take(max).collect()
 }
@@ -101,9 +122,10 @@ async fn page(inv: &Invoker<'_>, p: Page) -> Result<Views, Error> {
             } else {
                 (RoleList::Protected, "🔒 Protected roles", &s.protected_roles)
             };
-            let current: Vec<RoleId> = ids.iter().take(25).map(|r| RoleId::new(*r as u64)).collect();
+            roles_fit(ids.len(), if p == Page::ModRoles { "/config modroles" } else { "/config protected" })?;
+            let current: Vec<RoleId> = ids.iter().take(ROLES_MAX).map(|r| RoleId::new(*r as u64)).collect();
             let kind = CreateSelectMenuKind::Role { default_roles: Some(current).filter(|c| !c.is_empty()) };
-            let sel = CreateSelectMenu::new(PanelId::Config(ConfigId::Roles(which)).encode(), kind).placeholder("Choose roles").min_values(0).max_values(25);
+            let sel = CreateSelectMenu::new(PanelId::Config(ConfigId::Roles(which)).encode(), kind).placeholder("Choose roles").min_values(0).max_values(ROLES_MAX as u8);
             let desc = format!("Current: {}\n\nPick the roles below. The list is saved as soon as you choose; clear it to empty the list.", role_mentions(ids));
             (config_embed(title, desc), vec![CreateActionRow::SelectMenu(sel), back])
         }
@@ -187,7 +209,6 @@ fn input(label: &str, style: InputTextStyle, id: &str, required: bool, value: &s
 }
 
 /// Pop-up title and inputs for a form, pre-filled from the current settings.
-// shortcut: a word list over 4000 characters is cut when pre-filled, so saving it unchanged would drop the tail; the slash commands still edit it.
 fn form_inputs(f: Form, s: &GuildSettings) -> (&'static str, Vec<CreateActionRow>) {
     use InputTextStyle::{Paragraph, Short};
     match f {
@@ -201,8 +222,8 @@ fn form_inputs(f: Form, s: &GuildSettings) -> (&'static str, Vec<CreateActionRow
         ),
         Form::LadderRemove => ("Remove ladder rule", vec![input("Warnings", Short, "0", true, "", 4)]),
         Form::DecayOn => ("Warn decay", vec![input("Days (1-365)", Short, "0", true, &s.warn_decay_days.to_string(), 3)]),
-        Form::Words => ("Filtered words", vec![input("Words, comma-separated", Paragraph, "0", false, &s.filtered_words.join(", "), 4000)]),
-        Form::Hoist => ("Hoisting characters", vec![input("Characters", Short, "0", true, &s.hoist_chars, 32)]),
+        Form::Words => ("Filtered words", vec![input("Words, comma-separated", Paragraph, "0", false, &s.filtered_words.join(", "), WORDS_MAX as u16)]),
+        Form::Hoist => ("Hoisting characters", vec![input("Characters", Short, "0", true, &s.hoist_chars, HOIST_MAX as u16)]),
         Form::Fallback => ("Fallback nickname", vec![input("Fallback nickname", Short, "0", true, &s.nick_fallback, 32)]),
     }
 }
@@ -216,6 +237,7 @@ fn dm_modal(kind: CaseKind, current: &str) -> CreateModal {
 async fn form_modal(inv: &Invoker<'_>, f: Form) -> Result<CreateModal, Error> {
     require_manage_server(inv).await?;
     let s = settings::get_or_create(&inv.data.db, inv.guild_id.get() as i64).await?;
+    form_fits(f, &s)?;
     let (title, rows) = form_inputs(f, &s);
     Ok(CreateModal::new(PanelId::Config(ConfigId::Submit(f)).encode(), title).components(rows))
 }
@@ -342,6 +364,18 @@ mod tests {
         assert!(parse_ladder_action("mute").is_err());
         assert_eq!(parse_whole(" 3 ", "Warnings").unwrap(), 3);
         assert!(parse_whole("x", "Warnings").is_err());
+    }
+
+    #[test]
+    fn oversize_values_are_refused() {
+        let mut s = GuildSettings::defaults(1);
+        assert!(form_fits(Form::Words, &s).is_ok() && form_fits(Form::Hoist, &s).is_ok());
+        s.filtered_words = vec!["x".repeat(WORDS_MAX + 1)];
+        assert!(form_fits(Form::Words, &s).is_err());
+        s.hoist_chars = "y".repeat(HOIST_MAX + 1);
+        assert!(form_fits(Form::Hoist, &s).is_err());
+        assert!(roles_fit(25, "/config modroles").is_ok());
+        assert!(roles_fit(26, "/config modroles").is_err());
     }
 
     #[test]
