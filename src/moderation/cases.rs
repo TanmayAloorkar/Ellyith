@@ -34,6 +34,8 @@ case_kinds! {
     VoiceMute => "voice_mute", "Voice mute";
     VoiceUnmute => "voice_unmute", "Voice unmute";
     VoiceMove => "voice_move", "Voice move";
+    Quarantine => "quarantine", "Quarantine";
+    QuarantineRelease => "quarantine_release", "Quarantine release";
 }
 
 impl CaseKind {
@@ -234,5 +236,7 @@ mod tests {
         for k in [CaseKind::Untimeout, CaseKind::Unban, CaseKind::NickSet, CaseKind::NickReset, CaseKind::VoiceUnmute, CaseKind::VoiceDisconnect, CaseKind::VoiceMove] {
             assert!(!k.is_punishment());
         }
+        assert!(!CaseKind::Quarantine.is_punishment());
+        assert_eq!("quarantine_release".parse::<CaseKind>(), Ok(CaseKind::QuarantineRelease));
     }
 }

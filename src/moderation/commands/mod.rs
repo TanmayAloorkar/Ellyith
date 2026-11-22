@@ -56,6 +56,8 @@ fn done_label(kind: CaseKind) -> &'static str {
         CaseKind::VoiceMute => "🎙️ Voice-muted",
         CaseKind::VoiceUnmute => "🎙️ Voice-unmuted",
         CaseKind::VoiceMove => "➡️ Moved",
+        CaseKind::Quarantine => "🔒 Quarantined",
+        CaseKind::QuarantineRelease => "🔓 Released",
     }
 }
 

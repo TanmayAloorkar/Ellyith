@@ -9,6 +9,7 @@ pub enum Tone {
     Records,
     Config,
     Panel,
+    Safety,
 }
 
 impl Tone {
@@ -19,6 +20,7 @@ impl Tone {
             Tone::Records => 0x4e5058,
             Tone::Config => 0x949ba4,
             Tone::Panel => 0xf0b232,
+            Tone::Safety => 0x1abc9c,
         }
     }
 }
@@ -68,6 +70,7 @@ mod tests {
     fn builders() {
         assert_eq!(Tone::Members.colour(), 0xda373c);
         assert_eq!(Tone::Panel.colour(), 0xf0b232);
+        assert_eq!(Tone::Safety.colour(), 0x1abc9c);
         let e = serde_json::to_value(refused("That member's highest role is at or above yours.", true)).unwrap();
         assert_eq!(e["title"], "Can't do that");
         assert_eq!(e["footer"]["text"], "Nothing was changed. No DM was sent.");
