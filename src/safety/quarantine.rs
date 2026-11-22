@@ -183,6 +183,18 @@ async fn actor_name(ctx: &serenity::Context, actor: Actor) -> String {
     }
 }
 
+/// Ids to give back, or a refusal naming every existing role the bot can no longer assign.
+fn restore_plan(existing: &[(RoleInfo, String)], bot_top: u16) -> Result<Vec<u64>, UserError> {
+    let blocked: Vec<String> = existing.iter().filter(|(r, _)| r.managed || r.position >= bot_top).map(|(_, n)| format!("@{n}")).collect();
+    if !blocked.is_empty() {
+        return Err(UserError(format!(
+            "I can't give back {} because it is not below my role (or is managed by an integration). Move my role higher, then try again.",
+            blocked.join(", ")
+        )));
+    }
+    Ok(existing.iter().map(|(r, _)| r.id).collect())
+}
+
 pub async fn release(ctx: &serenity::Context, data: &Data, guild_id: GuildId, user: UserId, actor: Actor) -> Result<bool, Error> {
     let (gid, uid) = (guild_id.get() as i64, user.get() as i64);
     let Some(row) = store::quarantine_get(&data.db, gid, uid).await? else { return Ok(false) };
@@ -192,17 +204,19 @@ pub async fn release(ctx: &serenity::Context, data: &Data, guild_id: GuildId, us
             let q = s.quarantine_role_id.map(|r| RoleId::new(r as u64));
             let verified: &[i64] = if row.reason == QuarantineReason::Verification.as_str() { &s.verify_roles } else { &[] };
             let top = bot_top(ctx, guild_id).await?;
-            let mut roles: Vec<RoleId> = {
+            let existing: Vec<(RoleInfo, String)> = {
                 let g = ctx.cache.guild(guild_id).ok_or("guild not in cache")?;
-                // Restore only roles that still exist and the bot can still assign.
-                let restore = row
-                    .saved_roles
+                // Roles deleted from the server are skipped.
+                row.saved_roles
                     .iter()
                     .chain(verified)
-                    .map(|r| RoleId::new(*r as u64))
-                    .filter(|r| g.roles.get(r).is_some_and(|r| !r.managed && r.position < top));
-                m.roles.iter().copied().filter(|r| Some(*r) != q).chain(restore).collect()
+                    .filter_map(|r| g.roles.get(&RoleId::new(*r as u64)))
+                    .map(|r| (RoleInfo { id: r.id.get(), position: r.position, managed: r.managed }, r.name.clone()))
+                    .collect()
             };
+            let restore = restore_plan(&existing, top)?;
+            let mut roles: Vec<RoleId> =
+                m.roles.iter().copied().filter(|r| Some(*r) != q).chain(restore.into_iter().map(RoleId::new)).collect();
             roles.sort();
             roles.dedup();
             let edit = EditMember::new().roles(roles).audit_log_reason("Released from quarantine");
@@ -246,15 +260,24 @@ pub async fn deny(inv: &Invoker<'_>, user: UserId) -> Result<CreateEmbed, Error>
         Err(e) => return Err(e.into()),
     };
     let by = format!("{DENY_EMOJI} Denied by @{} · {}", inv.user.name, stamp());
+    // Claim the row first so a second Deny click does nothing.
+    if !store::quarantine_delete(&inv.data.db, gid, uid).await? {
+        return Err(UserError("Already handled.".into()).into());
+    }
     if !present && kind == CaseKind::Kick {
-        store::quarantine_delete(&inv.data.db, gid, uid).await?;
         mark_card(inv.ctx, inv.data, &row, format!("{by} · left the server")).await;
         let name = username(inv, user).await;
         let lines = [("Note", "They had already left the server.".to_string())];
         return Ok(reply::done(Tone::Safety, &format!("{DENY_EMOJI} Denied {name}"), &lines, log_footer(inv).await.as_deref()));
     }
-    let reply = punish(inv, kind, user, Some("Quarantine denied".into()), None, 0).await?;
-    store::quarantine_delete(&inv.data.db, gid, uid).await?;
+    let reply = match punish(inv, kind, user, Some("Quarantine denied".into()), None, 0).await {
+        Ok(r) => r,
+        Err(e) => {
+            // Put the row back so the saved roles are never lost.
+            store::quarantine_insert(&inv.data.db, &row).await?;
+            return Err(e);
+        }
+    };
     mark_card(inv.ctx, inv.data, &row, by).await;
     Ok(reply)
 }
@@ -486,6 +509,14 @@ mod tests {
             "That role has its own permissions; pick one without any."
         );
         assert!(validate_role(&role(3, false, Permissions::VIEW_CHANNEL), everyone, 10).is_ok());
+    }
+
+    #[test]
+    fn restore_plan_refuses_unassignable() {
+        let r = |id, position, managed, n: &str| (RoleInfo { id, position, managed }, n.to_string());
+        assert_eq!(restore_plan(&[r(1, 3, false, "A"), r(2, 4, false, "B")], 10).unwrap(), [1, 2]);
+        let err = restore_plan(&[r(1, 3, false, "A"), r(2, 10, false, "High"), r(3, 2, true, "Bot")], 10).unwrap_err().0;
+        assert!(err.contains("@High, @Bot") && !err.contains("@A") && err.contains("Move my role higher"), "{err}");
     }
 
     fn row(answers: Option<Vec<String>>) -> QuarantineRow {
