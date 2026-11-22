@@ -7,6 +7,7 @@ pub mod logging;
 pub mod scheduler;
 pub mod invoker;
 pub mod reply;
+pub mod panel;
 
 #[derive(Clone)]
 pub struct Data {

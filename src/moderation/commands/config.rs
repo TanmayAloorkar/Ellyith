@@ -8,7 +8,9 @@ use crate::moderation::nickname::validate_filter_config;
 use crate::moderation::templates;
 use crate::settings::{self, GuildSettings};
 use crate::{Context, Error, UserError};
-use poise::serenity_prelude::{CreateAllowedMentions, GuildChannel, Role};
+use crate::panel::view;
+use crate::reply::{self, Tone};
+use poise::serenity_prelude::{self as serenity, CreateAllowedMentions, CreateMessage, GuildChannel, MessageId, Role};
 
 /// Manage Server only (owner and Administrators pass too).
 async fn manage_guild(ctx: Context<'_>) -> Result<bool, Error> {
@@ -20,7 +22,7 @@ async fn manage_guild(ctx: Context<'_>) -> Result<bool, Error> {
 #[poise::command(
     slash_command,
     guild_only,
-    subcommands("modroles", "protected", "logs", "dm", "ladder", "decay", "nickwords", "nickfilter"),
+    subcommands("modroles", "protected", "logs", "dm", "ladder", "decay", "nickwords", "nickfilter", "panel"),
     default_member_permissions = "MANAGE_GUILD",
     check = "manage_guild"
 )]
@@ -441,6 +443,33 @@ pub async fn nickfilter_fallback(ctx: Context<'_>, name: String) -> Result<(), E
     s.nick_fallback = name;
     settings::save(db, &s).await?;
     ephemeral(ctx, format!("Fallback nickname: {}", s.nick_fallback)).await
+}
+
+/// Discord says the message or channel is gone: Unknown Channel (10003) or Unknown Message (10008).
+fn is_gone(e: &serenity::Error) -> bool {
+    matches!(e, serenity::Error::Http(serenity::HttpError::UnsuccessfulRequest(r)) if matches!(r.error.code, 10003 | 10008))
+}
+
+/// Post the moderation panel in a channel, replacing the previous one.
+#[poise::command(slash_command, guild_only)]
+pub async fn panel(ctx: Context<'_>, #[channel_types("Text", "News")] channel: GuildChannel) -> Result<(), Error> {
+    let db = &ctx.data().db;
+    let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
+    if let (Some(c), Some(m)) = (s.panel_channel_id, s.panel_message_id) {
+        match serenity::ChannelId::new(c as u64).delete_message(ctx, MessageId::new(m as u64)).await {
+            Err(e) if !is_gone(&e) => return Err(e.into()),
+            _ => {}
+        }
+    }
+    let (embed, rows) = view::home();
+    let posted = channel.id.send_message(ctx, CreateMessage::new().embed(embed).components(rows).allowed_mentions(CreateAllowedMentions::new())).await;
+    let Ok(msg) = posted else {
+        return Err(UserError("I can't post in that channel — check my permissions there.".into()).into());
+    };
+    s.panel_channel_id = Some(channel.id.get() as i64);
+    s.panel_message_id = Some(msg.id.get() as i64);
+    settings::save(db, &s).await?;
+    reply::send(ctx, reply::done(Tone::Config, "⚙️ Panel posted", &[("Channel", format!("<#{}>", channel.id))], None)).await
 }
 
 #[cfg(test)]

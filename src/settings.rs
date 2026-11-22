@@ -13,6 +13,8 @@ pub struct GuildSettings {
     pub hoist_chars: String,
     pub nick_fallback: String,
     pub nick_filter_enabled: bool,
+    pub panel_channel_id: Option<i64>,
+    pub panel_message_id: Option<i64>,
 }
 
 impl GuildSettings {
@@ -29,6 +31,8 @@ impl GuildSettings {
             hoist_chars: "!".into(),
             nick_fallback: "Moderated Nickname".into(),
             nick_filter_enabled: true,
+            panel_channel_id: None,
+            panel_message_id: None,
         }
     }
 }
@@ -65,7 +69,7 @@ pub async fn save(db: &PgPool, s: &GuildSettings) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE guild_settings SET mod_roles=$2, protected_roles=$3, dm_show_moderator=$4, \
          warn_decay_enabled=$5, warn_decay_days=$6, filtered_words=$7, hoist_chars=$8, \
-         nick_fallback=$9, nick_filter_enabled=$10 WHERE guild_id=$1",
+         nick_fallback=$9, nick_filter_enabled=$10, panel_channel_id=$11, panel_message_id=$12 WHERE guild_id=$1",
     )
     .bind(s.guild_id)
     .bind(&s.mod_roles)
@@ -77,6 +81,8 @@ pub async fn save(db: &PgPool, s: &GuildSettings) -> Result<(), sqlx::Error> {
     .bind(&s.hoist_chars)
     .bind(&s.nick_fallback)
     .bind(s.nick_filter_enabled)
+    .bind(s.panel_channel_id)
+    .bind(s.panel_message_id)
     .execute(db)
     .await?;
     Ok(())

@@ -42,3 +42,14 @@ async fn defaults_match_sql_defaults(pool: PgPool) {
     let d = aio_bot::settings::GuildSettings::defaults(5);
     assert_eq!(format!("{s:?}"), format!("{d:?}"));
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn panel_ids_default_none_and_round_trip(pool: PgPool) {
+    let mut s = get_or_create(&pool, 1).await.unwrap();
+    assert_eq!((s.panel_channel_id, s.panel_message_id), (None, None));
+    s.panel_channel_id = Some(1);
+    s.panel_message_id = Some(2);
+    save(&pool, &s).await.unwrap();
+    let r = get_or_create(&pool, 1).await.unwrap();
+    assert_eq!((r.panel_channel_id, r.panel_message_id), (Some(1), Some(2)));
+}
