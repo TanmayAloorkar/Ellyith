@@ -62,3 +62,12 @@ async fn quarantine_set_answers_keeps_row(pool: PgPool) {
     let r = quarantine_get(&pool, 1, 5).await.unwrap().unwrap();
     assert_eq!((r.answers, r.saved_roles), (Some(vec!["blue".into(), "x".into()]), vec![10, 11]));
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn lockdown_clear_one_channel(pool: PgPool) {
+    let ows = vec![SavedOverwrite { target_id: 1, is_member: false, allow: 0, deny: 2048 }];
+    lockdown_save_channel(&pool, 1, 100, &ows, false).await.unwrap();
+    lockdown_save_channel(&pool, 1, 101, &ows, true).await.unwrap();
+    lockdown_clear_channel(&pool, 1, 100).await.unwrap();
+    assert_eq!(lockdown_load(&pool, 1).await.unwrap(), vec![(101, true, ows)]);
+}

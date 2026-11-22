@@ -10,6 +10,7 @@ use crate::panel::view;
 use crate::reply::{self, Tone};
 use crate::settings::{self, GuildSettings};
 use crate::safety::commands::quarantine_config as quarantine;
+use crate::safety::lockdown::lockdown_config as lockdown;
 use crate::safety::verify::{self, RoleOp};
 use crate::{Context, Error, UserError};
 use poise::serenity_prelude::{self as serenity, CreateAllowedMentions, CreateMessage, GuildChannel, MessageId, Role, RoleId};
@@ -24,7 +25,7 @@ async fn manage_guild(ctx: Context<'_>) -> Result<bool, Error> {
 #[poise::command(
     slash_command,
     guild_only,
-    subcommands("modroles", "protected", "logs", "dm", "ladder", "decay", "nickwords", "nickfilter", "panel", "quarantine", "verification"),
+    subcommands("modroles", "protected", "logs", "dm", "ladder", "decay", "nickwords", "nickfilter", "panel", "quarantine", "verification", "lockdown"),
     default_member_permissions = "MANAGE_GUILD",
     check = "manage_guild"
 )]

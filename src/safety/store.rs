@@ -156,6 +156,11 @@ pub async fn lockdown_active(db: &PgPool, guild_id: i64) -> Result<bool, sqlx::E
     sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM lockdown_channels WHERE guild_id=$1)").bind(guild_id).fetch_one(db).await
 }
 
+pub async fn lockdown_clear_channel(db: &PgPool, guild_id: i64, channel_id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM lockdown_channels WHERE guild_id=$1 AND channel_id=$2").bind(guild_id).bind(channel_id).execute(db).await?;
+    Ok(())
+}
+
 pub async fn lockdown_clear(db: &PgPool, guild_id: i64) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM lockdown_channels WHERE guild_id=$1").bind(guild_id).execute(db).await?;
     Ok(())
