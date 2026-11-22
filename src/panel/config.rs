@@ -1,7 +1,7 @@
 //! Config panel: sub-views, selects and pop-ups. Every save goes through a `config_core` function,
 //! which re-checks Manage Server, so a stale or forwarded panel cannot change settings.
 use super::flows::{modal_values, msg, outcome_of, show_views, stale, STALE};
-use super::id::{Category, ConfigId, Form, Page, PanelId};
+use super::id::{log_cat, log_tok, Category, ConfigId, Form, Page, PanelId};
 use super::view;
 use crate::duration::parse_duration;
 use crate::invoker::Invoker;
@@ -135,7 +135,7 @@ async fn page(inv: &Invoker<'_>, p: Page) -> Result<Views, Error> {
                 .iter()
                 .map(|c| format!("**{}** {}", c.as_str(), set.iter().find(|(x, _)| x == c).map_or("not set".to_string(), |(_, ch)| format!("<#{ch}>"))))
                 .collect();
-            let options = LogCategory::ALL.iter().map(|c| (c.as_str().to_string(), c.as_str().to_string())).collect();
+            let options = std::iter::once("all").chain(LogCategory::ALL.iter().map(|c| c.as_str())).map(|c| (c.to_string(), c.to_string())).collect();
             let desc = format!("{}\n\nPick a log category to set its channel or turn it off.", lines.join("\n"));
             (config_embed("📋 Log channels", desc), vec![string_menu(ConfigId::LogCat, "Choose a log category", options), back])
         }
@@ -187,14 +187,14 @@ async fn page(inv: &Invoker<'_>, p: Page) -> Result<Views, Error> {
     })
 }
 
-fn log_prompt(cat: LogCategory) -> Views {
+fn log_prompt(cat: Option<LogCategory>) -> Views {
     let sel = menu(
         ConfigId::LogChan(cat),
         CreateSelectMenuKind::Channel { channel_types: Some(vec![ChannelType::Text, ChannelType::News]), default_channels: None },
         "Choose a channel",
     );
     let off = buttons(vec![(ConfigId::LogOff(cat), "Turn off", ButtonStyle::Danger)]);
-    (config_embed(&format!("📋 {} logs", cat.as_str()), "Pick the channel for this log, or turn it off.".into()), vec![sel, off, view::config_back_row()])
+    (config_embed(&format!("📋 {} logs", log_tok(cat)), "Pick the channel for this log, or turn it off.".into()), vec![sel, off, view::config_back_row()])
 }
 
 // ---- pop-ups ----
@@ -285,7 +285,7 @@ pub async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIn
             finish(ctx, ci, id, core::set_role_list(&inv, which, values.clone())).await?;
         }
         ConfigId::LogCat => {
-            let Some(cat) = single(ci).and_then(|v| LogCategory::ALL.into_iter().find(|c| c.as_str() == v)) else { return stale(ctx, ci).await };
+            let Some(cat) = single(ci).and_then(|v| log_cat(&v)) else { return stale(ctx, ci).await };
             ci.create_response(&ctx.http, show_views(in_ephemeral, log_prompt(cat))).await?;
         }
         ConfigId::LogChan(cat) => {

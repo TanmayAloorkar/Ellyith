@@ -71,8 +71,9 @@ pub enum ConfigId {
     /// Log category string select.
     LogCat,
     /// Log channel select for a category.
-    LogChan(LogCategory),
-    LogOff(LogCategory),
+    /// `None` = all categories.
+    LogChan(Option<LogCategory>),
+    LogOff(Option<LogCategory>),
     /// DM kind string select.
     DmKind,
     /// DM text pop-up submit.
@@ -132,8 +133,17 @@ fn untok<T: Copy>(table: &[(T, &'static str)], s: &str) -> Option<T> {
     table.iter().find(|(_, t)| *t == s).map(|(x, _)| *x)
 }
 
-fn log_cat(s: &str) -> Option<LogCategory> {
-    LogCategory::ALL.into_iter().find(|c| c.as_str() == s)
+/// Token for a log category; `all` is `None`.
+pub fn log_tok(c: Option<LogCategory>) -> &'static str {
+    c.map_or("all", |c| c.as_str())
+}
+
+/// Outer `None` = unknown token.
+pub fn log_cat(s: &str) -> Option<Option<LogCategory>> {
+    if s == "all" {
+        return Some(None);
+    }
+    LogCategory::ALL.into_iter().find(|c| c.as_str() == s).map(Some)
 }
 
 fn flag(s: &str) -> Option<bool> {
@@ -150,8 +160,8 @@ impl ConfigId {
             ConfigId::Open(p) => format!("mp:g:o:{}", tok(&PAGES, *p)),
             ConfigId::Roles(r) => format!("mp:g:r:{}", tok(&ROLE_LISTS, *r)),
             ConfigId::LogCat => "mp:g:lc".into(),
-            ConfigId::LogChan(c) => format!("mp:g:lh:{}", c.as_str()),
-            ConfigId::LogOff(c) => format!("mp:g:lo:{}", c.as_str()),
+            ConfigId::LogChan(c) => format!("mp:g:lh:{}", log_tok(*c)),
+            ConfigId::LogOff(c) => format!("mp:g:lo:{}", log_tok(*c)),
             ConfigId::DmKind => "mp:g:dk".into(),
             ConfigId::DmText(k) => format!("mp:g:dt:{}", k.as_str()),
             ConfigId::DmShowMod(v) => format!("mp:g:ds:{}", *v as u8),
@@ -286,7 +296,7 @@ mod tests {
         v.extend(PAGES.iter().map(|(p, _)| ConfigId::Open(*p)));
         v.extend(ROLE_LISTS.iter().map(|(r, _)| ConfigId::Roles(*r)));
         v.extend(FORMS.iter().flat_map(|(f, _)| [ConfigId::Form(*f), ConfigId::Submit(*f)]));
-        for c in LogCategory::ALL {
+        for c in LogCategory::ALL.into_iter().map(Some).chain([None]) {
             v.extend([ConfigId::LogChan(c), ConfigId::LogOff(c)]);
         }
         for k in crate::moderation::templates::dm_kinds() {

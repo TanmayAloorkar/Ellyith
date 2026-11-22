@@ -66,23 +66,30 @@ pub async fn set_role_list(inv: &Invoker<'_>, which: RoleList, roles: Vec<RoleId
     Ok(done(Tone::Config, title, &[("Roles", role_mentions(&ids))], None))
 }
 
-/// `None` disables the category.
-pub async fn set_log_channel(inv: &Invoker<'_>, cat: LogCategory, channel: Option<ChannelId>) -> Result<CreateEmbed, Error> {
+/// `cat: None` means every category. `channel: None` disables.
+pub async fn set_log_channel(inv: &Invoker<'_>, cat: Option<LogCategory>, channel: Option<ChannelId>) -> Result<CreateEmbed, Error> {
     require_manage_server(inv).await?;
     let db = &inv.data.db;
+    let cats: Vec<LogCategory> = cat.map_or(LogCategory::ALL.to_vec(), |c| vec![c]);
+    let name = cat.map_or("all", |c| c.as_str());
     match channel {
         Some(ch) => {
-            let hello = CreateMessage::new().content(format!("Logging {} here.", cat.as_str()));
+            let hello = CreateMessage::new().content(format!("Logging {name} here."));
             if ch.send_message(inv.ctx, hello).await.is_err() {
                 return Err(UserError("I can't post in that channel — check my permissions there.".into()).into());
             }
-            logging::set_channel(db, gid(inv), cat, ch.get() as i64).await?;
-            Ok(done(Tone::Config, "📋 Log channel saved", &[("Category", cat.as_str().into()), ("Channel", format!("<#{ch}>"))], None))
+            for c in cats {
+                logging::set_channel(db, gid(inv), c, ch.get() as i64).await?;
+            }
+            Ok(done(Tone::Config, "📋 Log channel saved", &[("Category", name.into()), ("Channel", format!("<#{ch}>"))], None))
         }
         None => {
-            let was = logging::clear(db, gid(inv), cat).await?;
+            let mut was = false;
+            for c in cats {
+                was |= logging::clear(db, gid(inv), c).await?;
+            }
             let state = if was { "disabled" } else { "was not enabled" };
-            Ok(done(Tone::Config, "📋 Log channel", &[("Category", cat.as_str().into()), ("Status", state.into())], None))
+            Ok(done(Tone::Config, "📋 Log channel", &[("Category", name.into()), ("Status", state.into())], None))
         }
     }
 }

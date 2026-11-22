@@ -116,16 +116,46 @@ pub async fn logs(_: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Send a log category to a channel.
-#[poise::command(slash_command, guild_only, rename = "set")]
-pub async fn logs_set(ctx: Context<'_>, category: LogCategory, #[channel_types("Text", "News")] channel: GuildChannel) -> Result<(), Error> {
-    reply::send(ctx, core::set_log_channel(&Invoker::from_poise(ctx)?, category, Some(channel.id)).await?).await
+/// A log category, or `all` of them.
+#[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
+pub enum LogChoice {
+    #[name = "all"]
+    All,
+    #[name = "mod_actions"]
+    ModActions,
+    #[name = "messages"]
+    Messages,
+    #[name = "joins_leaves"]
+    JoinsLeaves,
+    #[name = "member_updates"]
+    MemberUpdates,
+    #[name = "channels"]
+    Channels,
+    #[name = "roles"]
+    Roles,
+    #[name = "voice"]
+    Voice,
+    #[name = "external_mod"]
+    ExternalMod,
 }
 
-/// Stop logging a category.
+impl LogChoice {
+    /// `None` for `all`; names match `LogCategory::as_str`.
+    fn category(self) -> Option<LogCategory> {
+        LogCategory::ALL.into_iter().find(|c| c.as_str() == poise::ChoiceParameter::name(&self))
+    }
+}
+
+/// Send a log category (or all) to a channel.
+#[poise::command(slash_command, guild_only, rename = "set")]
+pub async fn logs_set(ctx: Context<'_>, category: LogChoice, #[channel_types("Text", "News")] channel: GuildChannel) -> Result<(), Error> {
+    reply::send(ctx, core::set_log_channel(&Invoker::from_poise(ctx)?, category.category(), Some(channel.id)).await?).await
+}
+
+/// Stop logging a category (or all).
 #[poise::command(slash_command, guild_only, rename = "disable")]
-pub async fn logs_disable(ctx: Context<'_>, category: LogCategory) -> Result<(), Error> {
-    reply::send(ctx, core::set_log_channel(&Invoker::from_poise(ctx)?, category, None).await?).await
+pub async fn logs_disable(ctx: Context<'_>, category: LogChoice) -> Result<(), Error> {
+    reply::send(ctx, core::set_log_channel(&Invoker::from_poise(ctx)?, category.category(), None).await?).await
 }
 
 /// Show log channels.
@@ -372,5 +402,13 @@ mod tests {
     fn dm_kind_matches_dm_kinds() {
         let mapped: Vec<CaseKind> = (0..DmKind::list().len()).map(|i| DmKind::from_index(i).unwrap().into()).collect();
         assert_eq!(mapped, templates::dm_kinds());
+    }
+
+    #[test]
+    fn log_choice_covers_every_category() {
+        let mapped: Vec<Option<LogCategory>> = (0..LogChoice::list().len()).map(|i| LogChoice::from_index(i).unwrap().category()).collect();
+        let mut want = vec![None];
+        want.extend(LogCategory::ALL.map(Some));
+        assert_eq!(mapped, want);
     }
 }
