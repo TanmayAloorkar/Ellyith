@@ -455,20 +455,26 @@ fn is_gone(e: &serenity::Error) -> bool {
 pub async fn panel(ctx: Context<'_>, #[channel_types("Text", "News")] channel: GuildChannel) -> Result<(), Error> {
     let db = &ctx.data().db;
     let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
-    if let (Some(c), Some(m)) = (s.panel_channel_id, s.panel_message_id) {
-        match serenity::ChannelId::new(c as u64).delete_message(ctx, MessageId::new(m as u64)).await {
-            Err(e) if !is_gone(&e) => return Err(e.into()),
-            _ => {}
-        }
-    }
+    let old = s.panel_channel_id.zip(s.panel_message_id);
     let (embed, rows) = view::home();
-    let posted = channel.id.send_message(ctx, CreateMessage::new().embed(embed).components(rows).allowed_mentions(CreateAllowedMentions::new())).await;
-    let Ok(msg) = posted else {
-        return Err(UserError("I can't post in that channel — check my permissions there.".into()).into());
+    let msg = match channel.id.send_message(ctx, CreateMessage::new().embed(embed).components(rows).allowed_mentions(CreateAllowedMentions::new())).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("posting the panel in {} failed: {e}", channel.id);
+            return Err(UserError("I can't post in that channel — check my permissions there.".into()).into());
+        }
     };
     s.panel_channel_id = Some(channel.id.get() as i64);
     s.panel_message_id = Some(msg.id.get() as i64);
     settings::save(db, &s).await?;
+    // Best effort: a stale or undeletable old panel must never block posting a new one.
+    if let Some((c, m)) = old {
+        if let Err(e) = serenity::ChannelId::new(c as u64).delete_message(ctx, MessageId::new(m as u64)).await {
+            if !is_gone(&e) {
+                tracing::warn!("deleting the old panel message failed: {e}");
+            }
+        }
+    }
     reply::send(ctx, reply::done(Tone::Config, "⚙️ Panel posted", &[("Channel", format!("<#{}>", channel.id))], None)).await
 }
 
