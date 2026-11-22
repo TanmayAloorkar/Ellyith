@@ -31,7 +31,7 @@ fn cut(s: &str, max: usize) -> String {
 
 pub fn done(tone: Tone, title: &str, lines: &[(&str, String)], footer: Option<&str>) -> CreateEmbed {
     let body: Vec<String> = lines.iter().map(|(l, v)| format!("**{l}** {}", cut(v, 1024))).collect();
-    let mut e = CreateEmbed::new().colour(tone.colour()).title(title).description(body.join("\n"));
+    let mut e = CreateEmbed::new().colour(tone.colour()).title(title).description(cut(&body.join("\n"), 4096));
     if let Some(f) = footer {
         e = e.footer(CreateEmbedFooter::new(f));
     }
@@ -48,7 +48,8 @@ pub fn list(tone: Tone, title: &str, intro: Option<&str>, groups: &[(&str, Vec<S
     if let Some(i) = intro {
         e = e.description(i);
     }
-    for (name, lines) in groups {
+    // Discord rejects empty field values.
+    for (name, lines) in groups.iter().filter(|(_, l)| !l.is_empty()) {
         e = e.field(*name, cut(&lines.join("\n"), 1024), false);
     }
     e
@@ -82,5 +83,15 @@ mod tests {
         assert_eq!(l["fields"][0]["name"], "Recent");
         assert_eq!(l["fields"][0]["value"], "a\nb");
         assert_eq!(l["fields"][1]["value"].as_str().unwrap().chars().count(), 1024);
+    }
+
+    #[test]
+    fn done_caps_description_and_list_skips_empty_groups() {
+        let lines: Vec<(&str, String)> = (0..10).map(|_| ("L", "x".repeat(1024))).collect();
+        let d = serde_json::to_value(done(Tone::Members, "t", &lines, None)).unwrap();
+        assert_eq!(d["description"].as_str().unwrap().chars().count(), 4096);
+        let l = serde_json::to_value(list(Tone::Records, "t", None, &[("Empty", vec![]), ("Full", vec!["a".into()])])).unwrap();
+        assert_eq!(l["fields"].as_array().unwrap().len(), 1);
+        assert_eq!(l["fields"][0]["name"], "Full");
     }
 }

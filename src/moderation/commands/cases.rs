@@ -1,34 +1,45 @@
+use crate::invoker::Invoker;
 use crate::logging::{case_embed, send_log, CaseEvent, LogCategory};
 use crate::moderation::cases::{self, Actor, Case};
-use crate::moderation::commands::config::ephemeral;
+use crate::moderation::commands::{log_footer, username};
 use crate::moderation::notes;
-use crate::invoker::Invoker;
 use crate::moderation::perms::authorize;
+use crate::reply::{self, done, list, Tone};
 use crate::settings;
 use crate::text::truncate;
 use crate::{Context, Error, UserError};
-use poise::serenity_prelude::{CreateAllowedMentions, CreateEmbed, CreateEmbedFooter, GuildId, Permissions, User, UserId};
+use poise::serenity_prelude::{CreateEmbed, CreateEmbedFooter, Permissions, User, UserId};
 
 const MAX_LINES: usize = 25;
-const MAX_LINE: usize = 150;
-
-fn guild(ctx: Context<'_>) -> Result<GuildId, Error> {
-    ctx.guild_id().ok_or_else(|| UserError("This command only works in a server.".into()).into())
-}
-
-/// Embed descriptions allow 4096 chars, so 26 lines of at most 150 fit; embeds never ping.
-async fn embed_reply(ctx: Context<'_>, embed: CreateEmbed) -> Result<(), Error> {
-    ctx.send(poise::CreateReply::default().embed(embed).ephemeral(true).allowed_mentions(CreateAllowedMentions::new())).await?;
-    Ok(())
-}
-
-fn lines_embed(title: &str, lines: Vec<String>) -> CreateEmbed {
-    let body = lines.iter().map(|l| truncate(l, MAX_LINE)).collect::<Vec<_>>().join("\n");
-    CreateEmbed::new().title(title).description(body)
-}
+const FIELD_MAX: usize = 1024;
 
 fn reason_of(c: &Case) -> &str {
     c.reason.as_deref().filter(|r| !r.is_empty()).unwrap_or("No reason given")
+}
+
+/// Whole lines only, so a field cut at 1024 never ends mid-line.
+fn fit_lines(lines: Vec<String>) -> Vec<String> {
+    let mut used = 0;
+    lines
+        .into_iter()
+        .take_while(|l| {
+            used += l.chars().count() + 1;
+            used <= FIELD_MAX + 1
+        })
+        .collect()
+}
+
+fn not_found(what: &str) -> Error {
+    UserError(format!("{what} not found.")).into()
+}
+
+/// Defer, build the invoker, run the core, send the embed.
+macro_rules! respond {
+    ($ctx:expr, $inv:ident => $core:expr) => {{
+        $ctx.defer_ephemeral().await?;
+        let $inv = Invoker::from_poise($ctx)?;
+        reply::send($ctx, $core.await?).await
+    }};
 }
 
 /// Inspect and manage cases.
@@ -40,80 +51,82 @@ pub async fn case(_: Context<'_>) -> Result<(), Error> {
 /// Show a case.
 #[poise::command(slash_command, guild_only, rename = "view")]
 pub async fn case_view(ctx: Context<'_>, #[min = 1] number: i32) -> Result<(), Error> {
-    ctx.defer_ephemeral().await?;
-    let inv = Invoker::from_poise(ctx)?;
-    authorize(&inv, Permissions::MODERATE_MEMBERS, None).await?;
-    let g = guild(ctx)?;
-    let Some(c) = cases::get(&ctx.data().db, g.get() as i64, number).await? else {
-        return ephemeral(ctx, "Case not found.".into()).await;
-    };
+    respond!(ctx, inv => case_view_core(&inv, number))
+}
+
+pub async fn case_view_core(inv: &Invoker<'_>, number: i32) -> Result<CreateEmbed, Error> {
+    authorize(inv, Permissions::MODERATE_MEMBERS, None).await?;
+    let c = cases::get(&inv.data.db, inv.guild_id.get() as i64, number).await?.ok_or_else(|| not_found("Case"))?;
     let mut e = case_embed(&c, CaseEvent::Created);
     if let Some(by) = c.removed_by {
         e = e.footer(CreateEmbedFooter::new(format!("Removed by <@{by}>")));
     }
-    embed_reply(ctx, e).await
+    Ok(e)
 }
 
 /// Change a case's reason.
 #[poise::command(slash_command, guild_only, rename = "reason")]
 pub async fn case_reason(ctx: Context<'_>, #[min = 1] number: i32, #[max_length = 1000] text: String) -> Result<(), Error> {
-    ctx.defer_ephemeral().await?;
-    let g = guild(ctx)?;
-    let Some(existing) = cases::get(&ctx.data().db, g.get() as i64, number).await? else {
-        return ephemeral(ctx, "Case not found.".into()).await;
-    };
-    let inv = Invoker::from_poise(ctx)?;
-    authorize(&inv, Permissions::MODERATE_MEMBERS, Some(UserId::new(existing.target_id as u64))).await?;
-    let Some(c) = cases::set_reason(&ctx.data().db, g.get() as i64, number, Some(text)).await? else {
-        return ephemeral(ctx, "Case not found.".into()).await;
-    };
-    send_log(&ctx.serenity_context().http, &ctx.data().db, g, LogCategory::ModActions, case_embed(&c, CaseEvent::ReasonEdited)).await;
-    ephemeral(ctx, format!("Case #{number} reason updated.")).await
+    respond!(ctx, inv => case_reason_core(&inv, number, text))
+}
+
+pub async fn case_reason_core(inv: &Invoker<'_>, number: i32, text: String) -> Result<CreateEmbed, Error> {
+    let g = inv.guild_id;
+    let db = &inv.data.db;
+    let existing = cases::get(db, g.get() as i64, number).await?.ok_or_else(|| not_found("Case"))?;
+    authorize(inv, Permissions::MODERATE_MEMBERS, Some(UserId::new(existing.target_id as u64))).await?;
+    let c = cases::set_reason(db, g.get() as i64, number, Some(text.clone())).await?.ok_or_else(|| not_found("Case"))?;
+    send_log(&inv.ctx.http, db, g, LogCategory::ModActions, case_embed(&c, CaseEvent::ReasonEdited)).await;
+    Ok(done(Tone::Records, &format!("✏️ Case #{number} reason updated"), &[("Reason", text)], log_footer(inv).await?.as_deref()))
 }
 
 /// Remove a case (kept on record, no longer counted).
 #[poise::command(slash_command, guild_only, rename = "remove")]
 pub async fn case_remove(ctx: Context<'_>, #[min = 1] number: i32) -> Result<(), Error> {
-    ctx.defer_ephemeral().await?;
-    let g = guild(ctx)?;
-    let Some(existing) = cases::get(&ctx.data().db, g.get() as i64, number).await? else {
-        return ephemeral(ctx, "Case not found or already removed.".into()).await;
-    };
-    let inv = Invoker::from_poise(ctx)?;
-    authorize(&inv, Permissions::MODERATE_MEMBERS, Some(UserId::new(existing.target_id as u64))).await?;
-    let by = ctx.author().id.get() as i64;
-    let Some(c) = cases::soft_remove(&ctx.data().db, g.get() as i64, number, by).await? else {
-        return ephemeral(ctx, "Case not found or already removed.".into()).await;
-    };
-    send_log(&ctx.serenity_context().http, &ctx.data().db, g, LogCategory::ModActions, case_embed(&c, CaseEvent::Removed { by })).await;
-    ephemeral(ctx, format!("Case #{number} removed.")).await
+    respond!(ctx, inv => case_remove_core(&inv, number))
+}
+
+pub async fn case_remove_core(inv: &Invoker<'_>, number: i32) -> Result<CreateEmbed, Error> {
+    let g = inv.guild_id;
+    let db = &inv.data.db;
+    let gone = || UserError("Case not found or already removed.".into());
+    let existing = cases::get(db, g.get() as i64, number).await?.ok_or_else(gone)?;
+    authorize(inv, Permissions::MODERATE_MEMBERS, Some(UserId::new(existing.target_id as u64))).await?;
+    let by = inv.user.id.get() as i64;
+    let c = cases::soft_remove(db, g.get() as i64, number, by).await?.ok_or_else(gone)?;
+    send_log(&inv.ctx.http, db, g, LogCategory::ModActions, case_embed(&c, CaseEvent::Removed { by })).await;
+    Ok(done(Tone::Records, &format!("🗑️ Case #{number} removed"), &[("Note", "Kept on record, no longer counted.".into())], log_footer(inv).await?.as_deref()))
 }
 
 /// Show a user's case history.
 #[poise::command(slash_command, guild_only)]
 pub async fn history(ctx: Context<'_>, user: User) -> Result<(), Error> {
-    ctx.defer_ephemeral().await?;
-    let inv = Invoker::from_poise(ctx)?;
-    authorize(&inv, Permissions::MODERATE_MEMBERS, None).await?;
-    let g = guild(ctx)?.get() as i64;
-    let db = &ctx.data().db;
-    let target = user.id.get() as i64;
+    respond!(ctx, inv => history_core(&inv, user.id))
+}
+
+pub async fn history_core(inv: &Invoker<'_>, user: UserId) -> Result<CreateEmbed, Error> {
+    authorize(inv, Permissions::MODERATE_MEMBERS, None).await?;
+    let g = inv.guild_id.get() as i64;
+    let db = &inv.data.db;
+    let target = user.get() as i64;
     let s = settings::get_or_create(db, g).await?;
     let all = cases::history(db, g, target, true).await?;
     let active = cases::active_warn_count(db, g, target, s.warn_decay_enabled.then_some(s.warn_decay_days)).await?;
-    let mut lines = vec![format!("<@{}>: {} case(s), {active} active warning(s)", user.id, all.len())];
-    for c in all.iter().take(MAX_LINES) {
-        let removed = c.removed_by.map(|b| format!(" [Removed by <@{b}>]")).unwrap_or_default();
-        let who = match c.actor {
-            Actor::Moderator(id) => format!("<@{id}>"),
-            Actor::AutoPunishment => "Auto punishment".into(),
-            Actor::System => "System".into(),
-        };
-        // Reason is cut first so the removed marker survives the per-line truncation.
-        let reason = truncate(reason_of(c), 60);
-        lines.push(format!("`#{}` {} by {who} <t:{}:d>: {reason}{removed}", c.case_number, c.kind.label(), c.created_at.timestamp()));
-    }
-    embed_reply(ctx, lines_embed("Case history", lines)).await
+    let decay = if s.warn_decay_enabled { format!("Decay on ({} days)", s.warn_decay_days) } else { "Decay off".into() };
+    let lines = all
+        .iter()
+        .take(MAX_LINES)
+        .map(|c| {
+            let line = format!("**#{} {}** {} · {}", c.case_number, c.kind.label(), truncate(reason_of(c), 40), c.created_at.format("%-d %b"));
+            match c.removed_by {
+                Some(b) => format!("~~{line}~~ · removed by <@{b}>"),
+                None => line,
+            }
+        })
+        .collect();
+    let n = all.len();
+    let title = format!("📜 {} — {n} case{}", username(inv, user).await, if n == 1 { "" } else { "s" });
+    Ok(list(Tone::Records, &title, Some(&format!("Active warnings: {active} · {decay}")), &[("Recent", fit_lines(lines))]))
 }
 
 /// Private moderator notes.
@@ -125,77 +138,104 @@ pub async fn note(_: Context<'_>) -> Result<(), Error> {
 /// Add a note about a user.
 #[poise::command(slash_command, guild_only, rename = "add")]
 pub async fn note_add(ctx: Context<'_>, user: User, #[max_length = 1000] text: String) -> Result<(), Error> {
-    ctx.defer_ephemeral().await?;
-    let inv = Invoker::from_poise(ctx)?;
-    authorize(&inv, Permissions::MODERATE_MEMBERS, None).await?;
-    let g = guild(ctx)?.get() as i64;
-    let n = notes::add(&ctx.data().db, g, user.id.get() as i64, ctx.author().id.get() as i64, &text).await?;
-    ephemeral(ctx, format!("Note #{} added for <@{}>.", n.id, user.id)).await
+    respond!(ctx, inv => note_add_core(&inv, user.id, text))
+}
+
+pub async fn note_add_core(inv: &Invoker<'_>, user: UserId, text: String) -> Result<CreateEmbed, Error> {
+    authorize(inv, Permissions::MODERATE_MEMBERS, None).await?;
+    let n = notes::add(&inv.data.db, inv.guild_id.get() as i64, user.get() as i64, inv.user.id.get() as i64, &text).await?;
+    let title = format!("📝 Note added for {}", username(inv, user).await);
+    Ok(done(Tone::Records, &title, &[("Note", format!("#{}", n.id)), ("Text", text)], None))
 }
 
 /// List notes about a user.
 #[poise::command(slash_command, guild_only, rename = "list")]
 pub async fn note_list(ctx: Context<'_>, user: User) -> Result<(), Error> {
-    ctx.defer_ephemeral().await?;
-    let inv = Invoker::from_poise(ctx)?;
-    authorize(&inv, Permissions::MODERATE_MEMBERS, None).await?;
-    let g = guild(ctx)?.get() as i64;
-    let all = notes::list(&ctx.data().db, g, user.id.get() as i64).await?;
-    if all.is_empty() {
-        return ephemeral(ctx, "No notes.".into()).await;
-    }
-    let mut lines = vec![format!("<@{}>: {} note(s)", user.id, all.len())];
-    lines.extend(all.iter().take(MAX_LINES).map(|n| format!("`#{}` <@{}> <t:{}:d>: {}", n.id, n.author_id, n.created_at.timestamp(), truncate(&n.content, 100))));
-    embed_reply(ctx, lines_embed("Notes", lines)).await
+    respond!(ctx, inv => note_list_core(&inv, user.id))
+}
+
+pub async fn note_list_core(inv: &Invoker<'_>, user: UserId) -> Result<CreateEmbed, Error> {
+    authorize(inv, Permissions::MODERATE_MEMBERS, None).await?;
+    let all = notes::list(&inv.data.db, inv.guild_id.get() as i64, user.get() as i64).await?;
+    let lines = all
+        .iter()
+        .take(MAX_LINES)
+        .map(|n| format!("**#{}** {} · <@{}> · {}", n.id, truncate(&n.content, 60), n.author_id, n.created_at.format("%-d %b")))
+        .collect();
+    let count = all.len();
+    let title = format!("📝 {} — {count} note{}", username(inv, user).await, if count == 1 { "" } else { "s" });
+    Ok(list(Tone::Records, &title, None, &[("Notes", fit_lines(lines))]))
 }
 
 /// Show a full note by its id.
 #[poise::command(slash_command, guild_only, rename = "view")]
 pub async fn note_view(ctx: Context<'_>, #[min = 1] id: i64) -> Result<(), Error> {
-    ctx.defer_ephemeral().await?;
-    let inv = Invoker::from_poise(ctx)?;
-    authorize(&inv, Permissions::MODERATE_MEMBERS, None).await?;
-    let g = guild(ctx)?.get() as i64;
-    let Some(n) = notes::get(&ctx.data().db, g, id).await? else {
-        return ephemeral(ctx, "Note not found.".into()).await;
-    };
-    let e = CreateEmbed::new()
-        .title(format!("Note #{}", n.id))
-        .description(&n.content)
-        .field("About", format!("<@{}>", n.target_id), true)
-        .field("Author", format!("<@{}>", n.author_id), true)
-        .field("Date", format!("<t:{}:f>", n.created_at.timestamp()), true);
-    embed_reply(ctx, e).await
+    respond!(ctx, inv => note_view_core(&inv, id))
+}
+
+pub async fn note_view_core(inv: &Invoker<'_>, id: i64) -> Result<CreateEmbed, Error> {
+    authorize(inv, Permissions::MODERATE_MEMBERS, None).await?;
+    let n = notes::get(&inv.data.db, inv.guild_id.get() as i64, id).await?.ok_or_else(|| not_found("Note"))?;
+    let about = format!("<@{}>", n.target_id);
+    let by = format!("<@{}>", n.author_id);
+    let date = format!("<t:{}:f>", n.created_at.timestamp());
+    Ok(list(
+        Tone::Records,
+        &format!("📝 Note #{}", n.id),
+        Some(&n.content),
+        &[("About", vec![about]), ("Author", vec![by]), ("Date", vec![date])],
+    ))
 }
 
 /// Delete a note by its id.
 #[poise::command(slash_command, guild_only, rename = "remove")]
 pub async fn note_remove(ctx: Context<'_>, #[min = 1] id: i64) -> Result<(), Error> {
-    ctx.defer_ephemeral().await?;
-    let inv = Invoker::from_poise(ctx)?;
-    authorize(&inv, Permissions::MODERATE_MEMBERS, None).await?;
-    let g = guild(ctx)?.get() as i64;
-    let msg = if notes::remove(&ctx.data().db, g, id).await? { format!("Note #{id} deleted.") } else { "Note not found.".into() };
-    ephemeral(ctx, msg).await
+    respond!(ctx, inv => note_remove_core(&inv, id))
+}
+
+pub async fn note_remove_core(inv: &Invoker<'_>, id: i64) -> Result<CreateEmbed, Error> {
+    authorize(inv, Permissions::MODERATE_MEMBERS, None).await?;
+    if !notes::remove(&inv.data.db, inv.guild_id.get() as i64, id).await? {
+        return Err(not_found("Note"));
+    }
+    Ok(done(Tone::Records, &format!("🗑️ Note #{id} deleted"), &[], None))
 }
 
 /// Show your own warnings and other cases.
 #[poise::command(slash_command, guild_only)]
 pub async fn mywarnings(ctx: Context<'_>) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
-    let g = guild(ctx)?.get() as i64;
-    let me = ctx.author().id.get() as i64;
-    let db = &ctx.data().db;
+    let inv = Invoker::from_poise(ctx)?;
+    let g = inv.guild_id.get() as i64;
+    let me = inv.user.id.get() as i64;
+    let db = &inv.data.db;
     let s = settings::get_or_create(db, g).await?;
     let mine = cases::history(db, g, me, false).await?;
     let active = cases::active_warn_count(db, g, me, s.warn_decay_enabled.then_some(s.warn_decay_days)).await?;
-    let mut lines = vec![format!("Active warnings: {active}")];
-    for c in mine.iter().take(MAX_LINES) {
-        let by = match (s.dm_show_moderator, c.actor) {
-            (true, Actor::Moderator(id)) => format!(" by <@{id}>"),
-            _ => String::new(),
-        };
-        lines.push(format!("`#{}` {}{by} <t:{}:d>: {}", c.case_number, c.kind.label(), c.created_at.timestamp(), reason_of(c)));
+    let lines = mine
+        .iter()
+        .take(MAX_LINES)
+        .map(|c| {
+            let by = match (s.dm_show_moderator, c.actor) {
+                (true, Actor::Moderator(id)) => format!(" by <@{id}>"),
+                _ => String::new(),
+            };
+            format!("**#{} {}**{by} {} · {}", c.case_number, c.kind.label(), truncate(reason_of(c), 40), c.created_at.format("%-d %b"))
+        })
+        .collect();
+    reply::send(ctx, list(Tone::Records, "📜 Your record", Some(&format!("Active warnings: {active}")), &[("Recent", fit_lines(lines))])).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fit_lines_keeps_whole_lines_under_the_field_limit() {
+        let lines: Vec<String> = (0..10).map(|_| "x".repeat(300)).collect();
+        let kept = fit_lines(lines);
+        assert_eq!(kept.len(), 3);
+        assert!(kept.join("\n").chars().count() <= FIELD_MAX);
+        assert!(fit_lines(vec![]).is_empty());
     }
-    embed_reply(ctx, lines_embed("Your record", lines)).await
 }

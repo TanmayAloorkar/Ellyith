@@ -1,10 +1,11 @@
 use crate::moderation::actions::{discord_error, record_or_log};
 use crate::moderation::cases::{Actor, CaseKind, NewCase};
-use crate::moderation::commands::config::ephemeral;
+use crate::moderation::commands::{action_reply, detail_lines};
+use crate::reply::{self, Tone};
 use crate::invoker::Invoker;
 use crate::moderation::perms::{authorize, member_facts, require_member};
 use crate::{Context, Error, UserError};
-use poise::serenity_prelude::{ChannelId, EditMember, GuildChannel, Permissions, User};
+use poise::serenity_prelude::{ChannelId, CreateEmbed, EditMember, GuildChannel, Permissions, User, UserId};
 
 /// Voice moderation.
 #[poise::command(slash_command, guild_only, subcommands("voice_disconnect", "voice_mute", "voice_unmute", "voice_move"))]
@@ -59,53 +60,67 @@ fn case_reason(dest: Option<ChannelId>, reason: Option<String>) -> Option<String
 
 async fn run(ctx: Context<'_>, user: User, kind: CaseKind, dest: Option<ChannelId>, reason: Option<String>) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
-    let need = required_permission(kind);
     let inv = Invoker::from_poise(ctx)?;
-    authorize(&inv, need, Some(user.id)).await?;
-    require_member(&inv, user.id).await?;
-    let guild_id = ctx.guild_id().ok_or_else(|| UserError("This command only works in a server.".into()))?;
-    let current = ctx
-        .cache()
+    reply::send(ctx, voice_action(&inv, user.id, kind, dest, reason).await?).await
+}
+
+/// Disconnect, mute, unmute or move (`dest` required for move). Authorises like the slash command.
+pub async fn voice_action(inv: &Invoker<'_>, user: UserId, kind: CaseKind, dest: Option<ChannelId>, reason: Option<String>) -> Result<CreateEmbed, Error> {
+    if kind == CaseKind::VoiceMove && dest.is_none() {
+        return Err(UserError("Choose a voice channel to move them to.".into()).into());
+    }
+    if !matches!(kind, CaseKind::VoiceDisconnect | CaseKind::VoiceMute | CaseKind::VoiceUnmute | CaseKind::VoiceMove) {
+        return Err(UserError(format!("{} is not a voice action.", kind.label())).into());
+    }
+    let need = required_permission(kind);
+    authorize(inv, need, Some(user)).await?;
+    require_member(inv, user).await?;
+    let guild_id = inv.guild_id;
+    let current = inv
+        .ctx
+        .cache
         .guild(guild_id)
-        .and_then(|g| g.voice_states.get(&user.id).and_then(|v| v.channel_id))
+        .and_then(|g| g.voice_states.get(&user).and_then(|v| v.channel_id))
         .ok_or_else(|| UserError("That user is not in a voice channel.".into()))?;
     if dest == Some(current) {
         return Err(UserError("That user is already in that channel.".into()).into());
     }
-    let bot_id = ctx.cache().current_user().id;
-    let bot_m = require_member(&inv, bot_id).await?;
-    let bot = member_facts(ctx.serenity_context(), guild_id, &bot_m).await?;
+    let bot_id = inv.ctx.cache.current_user().id;
+    let bot_m = require_member(inv, bot_id).await?;
+    let bot = member_facts(inv.ctx, guild_id, &bot_m).await?;
     if !bot.permissions.contains(need) {
         return Err(UserError("I don't have permission to do that.".into()).into());
     }
-    let audit = format!("Voice action by {}", ctx.author().name);
+    let audit = format!("Voice action by {}", inv.user.name);
     let edit = match kind {
         CaseKind::VoiceDisconnect => EditMember::new().disconnect_member(),
         CaseKind::VoiceMute => EditMember::new().mute(true),
         CaseKind::VoiceUnmute => EditMember::new().mute(false),
         _ => EditMember::new().voice_channel(dest.expect("move has a destination")),
     };
-    guild_id.edit_member(ctx, user.id, edit.audit_log_reason(&audit)).await.map_err(discord_error)?;
+    guild_id.edit_member(inv.ctx, user, edit.audit_log_reason(&audit)).await.map_err(discord_error)?;
     let case = record_or_log(
-        ctx.serenity_context(),
-        ctx.data(),
+        inv.ctx,
+        inv.data,
         None,
         NewCase {
             guild_id: guild_id.get() as i64,
             kind,
-            target_id: user.id.get() as i64,
-            actor: Actor::Moderator(ctx.author().id.get() as i64),
-            reason: case_reason(dest, reason),
+            target_id: user.get() as i64,
+            actor: Actor::Moderator(inv.user.id.get() as i64),
+            reason: case_reason(dest, reason.clone()),
             duration_secs: None,
             expires_at: None,
             dm_failed: false,
         },
     )
     .await?;
-    match case {
-        Some(c) => ephemeral(ctx, format!("Case #{}: {} for <@{}>.", c.case_number, c.kind.label(), user.id)).await,
-        None => ephemeral(ctx, format!("{} applied to <@{}>. Logged, no case.", kind.label(), user.id)).await,
+    let mut lines = Vec::new();
+    if let Some(d) = dest {
+        lines.push(("Channel", format!("<#{d}>")));
     }
+    lines.extend(detail_lines(reason.as_deref(), None));
+    action_reply(inv, Tone::NamesVoice, kind, user, lines, case.as_ref()).await
 }
 
 #[cfg(test)]
