@@ -195,7 +195,7 @@ fn modal_for(a: Action, user: Option<UserId>, chan: Option<ChannelId>) -> Option
     Some(CreateModal::new(PanelId::Modal(a, user, chan).encode(), title).components(rows))
 }
 
-/// Ids anyone in any server may press; every other `mp:` id is the staff panel.
+/// Ids any home-guild member may press (no staff check); every other `mp:` id is staff-gated by its core.
 pub fn is_public_id(id: &str) -> bool {
     matches!(id, "mp:v" | "mp:vq")
 }
@@ -205,8 +205,8 @@ pub fn is_public_id(id: &str) -> bool {
 /// Handle a panel button, select or pop-up. Ignores everything else; never returns an error.
 pub async fn handle(ctx: &serenity::Context, data: &Data, interaction: &serenity::Interaction) {
     let res = match interaction {
-        serenity::Interaction::Component(ci) if ci.data.custom_id.starts_with("mp:") && (ci.guild_id == Some(data.home_guild) || is_public_id(&ci.data.custom_id)) => on_component(ctx, data, ci).await,
-        serenity::Interaction::Modal(mi) if mi.data.custom_id.starts_with("mp:") && (mi.guild_id == Some(data.home_guild) || is_public_id(&mi.data.custom_id)) => on_modal(ctx, data, mi).await,
+        serenity::Interaction::Component(ci) if ci.data.custom_id.starts_with("mp:") && ci.guild_id == Some(data.home_guild) => on_component(ctx, data, ci).await,
+        serenity::Interaction::Modal(mi) if mi.data.custom_id.starts_with("mp:") && mi.guild_id == Some(data.home_guild) => on_modal(ctx, data, mi).await,
         _ => return,
     };
     if let Err(e) = res {

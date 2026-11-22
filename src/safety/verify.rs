@@ -38,7 +38,7 @@ fn mark(m: &mut Cooldowns, key: (u64, u64), now: Instant) {
 }
 
 fn on_cooldown(key: (u64, u64)) -> bool {
-    cooling(FAILED.lock().unwrap().get_or_insert_default(), key, Instant::now())
+    cooling(FAILED.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default(), key, Instant::now())
 }
 
 pub fn verify_message(s: &SafetySettings) -> CreateMessage {
@@ -114,8 +114,8 @@ pub async fn on_press(ctx: &serenity::Context, data: &Data, ci: &ComponentIntera
 
 /// Quiz submit: staff mode stores the answers for review, auto mode grades them.
 pub async fn on_submit(ctx: &serenity::Context, data: &Data, mi: &ModalInteraction) -> Result<(), Error> {
-    mi.create_response(&ctx.http, CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new().ephemeral(true))).await?;
     let Some(gid) = mi.guild_id else { return Ok(()) };
+    mi.create_response(&ctx.http, CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new().ephemeral(true))).await?;
     let res = submit(ctx, data, gid, mi.user.id, modal_values(mi)).await;
     let e = outcome_of(PanelId::VerifyQuiz, false, res);
     mi.edit_response(&ctx.http, EditInteractionResponse::new().embed(e)).await?;
@@ -144,7 +144,7 @@ async fn submit(ctx: &serenity::Context, data: &Data, gid: GuildId, user: UserId
         return Ok(note("⏳ Wait a moment", WAIT));
     }
     if !quiz_passes(&s.quiz_answers, &values) {
-        mark(FAILED.lock().unwrap().get_or_insert_default(), key, Instant::now());
+        mark(FAILED.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default(), key, Instant::now());
         return Ok(note("❌ Not quite", WAIT));
     }
     Ok(if release(ctx, data, gid, user, Actor::System).await? { welcome() } else { already() })
