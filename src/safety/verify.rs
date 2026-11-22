@@ -203,28 +203,39 @@ pub async fn set_channel_core(inv: &Invoker<'_>, channel: ChannelId) -> Result<C
 pub enum RoleOp {
     Add(RoleId),
     Remove(RoleId),
+    /// Replace the whole list (panel multi-select); every role is checked like `Add`.
+    Set(Vec<RoleId>),
     Clear,
+}
+
+async fn check_roles(inv: &Invoker<'_>, roles: &[RoleId]) -> Result<(), Error> {
+    let top = bot_top(inv.ctx, inv.guild_id).await?;
+    let g = inv.ctx.cache.guild(inv.guild_id).ok_or("guild not in cache")?;
+    for r in roles {
+        let role = g.roles.get(r).ok_or_else(|| UserError("That role no longer exists.".into()))?;
+        if role.managed {
+            return Err(UserError("That role is managed by an integration.".into()).into());
+        }
+        if role.position >= top {
+            return Err(UserError("That role is not below mine.".into()).into());
+        }
+    }
+    Ok(())
 }
 
 pub async fn set_roles_core(inv: &Invoker<'_>, op: RoleOp) -> Result<CreateEmbed, Error> {
     let mut s = load(inv).await?;
     match op {
         RoleOp::Add(r) => {
-            let top = bot_top(inv.ctx, inv.guild_id).await?;
-            {
-                let g = inv.ctx.cache.guild(inv.guild_id).ok_or("guild not in cache")?;
-                let role = g.roles.get(&r).ok_or_else(|| UserError("That role no longer exists.".into()))?;
-                if role.managed {
-                    return Err(UserError("That role is managed by an integration.".into()).into());
-                }
-                if role.position >= top {
-                    return Err(UserError("That role is not below mine.".into()).into());
-                }
-            }
+            check_roles(inv, &[r]).await?;
             let id = r.get() as i64;
             if !s.verify_roles.contains(&id) {
                 s.verify_roles.push(id);
             }
+        }
+        RoleOp::Set(roles) => {
+            check_roles(inv, &roles).await?;
+            s.verify_roles = roles.iter().map(|r| r.get() as i64).collect();
         }
         RoleOp::Remove(r) => s.verify_roles.retain(|x| *x != r.get() as i64),
         RoleOp::Clear => s.verify_roles.clear(),
@@ -236,8 +247,13 @@ pub async fn set_roles_core(inv: &Invoker<'_>, op: RoleOp) -> Result<CreateEmbed
 
 /// Lines are `question | expected answer` separated by `;`. Errors before anything is saved.
 pub fn parse_questions(text: &str) -> Result<(Vec<String>, Vec<String>), UserError> {
+    parse_question_lines(text.split(';'))
+}
+
+/// One `question | answer` per item (panel pop-up inputs); empty items are dropped.
+pub fn parse_question_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> Result<(Vec<String>, Vec<String>), UserError> {
     let mut parsed = Vec::new();
-    for line in text.split(';') {
+    for line in lines {
         parsed.extend(parse_question_line(line)?);
     }
     if parsed.len() > MAX_QUESTIONS {
@@ -247,8 +263,16 @@ pub fn parse_questions(text: &str) -> Result<(Vec<String>, Vec<String>), UserErr
 }
 
 pub async fn set_questions_core(inv: &Invoker<'_>, text: &str) -> Result<CreateEmbed, Error> {
+    save_questions(inv, parse_questions(text)?).await
+}
+
+pub async fn set_question_lines_core(inv: &Invoker<'_>, lines: &[String]) -> Result<CreateEmbed, Error> {
+    save_questions(inv, parse_question_lines(lines.iter().map(String::as_str))?).await
+}
+
+async fn save_questions(inv: &Invoker<'_>, parsed: (Vec<String>, Vec<String>)) -> Result<CreateEmbed, Error> {
     let mut s = load(inv).await?;
-    (s.quiz_questions, s.quiz_answers) = parse_questions(text)?;
+    (s.quiz_questions, s.quiz_answers) = parsed;
     store::save_settings(&inv.data.db, &s).await?;
     let list = if s.quiz_questions.is_empty() {
         "none".to_string()

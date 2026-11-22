@@ -99,6 +99,14 @@ const CONFIG: &[(&str, &[ConfigItem])] = &[
     ("People", &[(Page::ModRoles, "🛡️ Mod roles", "Who can use moderation."), (Page::Protected, "🔒 Protected", "Roles mods can't act on.")]),
     ("Messages & logs", &[(Page::Logs, "📋 Log channels", "Where each kind of log goes."), (Page::Dm, "✉️ DM messages", "What members are told when punished.")]),
     ("Rules", &[(Page::Ladder, "📈 Ladder", "Auto-punish after N warnings."), (Page::Decay, "⏱️ Warn decay", "Old warnings stop counting."), (Page::Filter, "🚫 Name filter", "Reset bad nicknames.")]),
+    (
+        "Safety",
+        &[
+            (Page::Verification, "✅ Verification", "Off / button / button + quiz, questions, roles given."),
+            (Page::Quarantine, "🚧 Quarantine", "Role, review channel, what Deny does."),
+            (Page::Lockdown, "🔒 Lockdown", "Which channels lockdown covers."),
+        ],
+    ),
 ];
 
 fn button(id: PanelId, label: &str, style: ButtonStyle) -> CreateButton {
@@ -190,11 +198,14 @@ pub fn category(c: Category) -> Views {
                 e = e.field(*name, items.iter().map(|(_, l, d)| line(l, d)).collect::<Vec<_>>().join("\n"), false);
                 buttons.extend(items.iter().map(|(p, l, _)| config_button(ConfigId::Open(*p), l, S)));
             }
-            // Four per row, Back last: matches the mockup.
-            let tail = buttons.split_off(4);
-            let mut second = tail;
-            second.push(back());
-            (e, vec![CreateActionRow::Buttons(buttons), CreateActionRow::Buttons(second)])
+            // Rows of 4, 3, 3, then Back alone.
+            let mut rows = vec![];
+            for n in [4, 3, 3] {
+                let rest = buttons.split_off(n);
+                rows.push(CreateActionRow::Buttons(std::mem::replace(&mut buttons, rest)));
+            }
+            rows.push(CreateActionRow::Buttons(vec![back()]));
+            (e, rows)
         }
     }
 }
@@ -245,6 +256,16 @@ mod tests {
         assert_eq!(rows[1]["components"].as_array().unwrap().len(), 2);
         let e = serde_json::to_value(category(Category::Channels).0).unwrap();
         assert!(e["footer"].is_null());
+    }
+
+    #[test]
+    fn config_rows_fit() {
+        let v = serde_json::to_value(category(Category::Config).1).unwrap();
+        let rows = v.as_array().unwrap();
+        let lens: Vec<usize> = rows.iter().map(|r| r["components"].as_array().unwrap().len()).collect();
+        assert_eq!(lens, [4, 3, 3, 1]);
+        let last = rows.last().unwrap()["components"][0]["custom_id"].as_str().unwrap();
+        assert_eq!(last, PanelId::Home.encode());
     }
 
     #[test]

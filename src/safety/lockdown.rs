@@ -324,6 +324,18 @@ pub async fn set_channel_core(inv: &Invoker<'_>, channel: ChannelId, add: bool) 
     Ok(reply::done(Tone::Config, title, &lines, None))
 }
 
+/// Replace the whole lockdown channel list (panel multi-select).
+pub async fn set_channels_core(inv: &Invoker<'_>, channels: &[ChannelId]) -> Result<CreateEmbed, Error> {
+    require_manage_server(inv).await?;
+    if channels.len() > MAX_CHANNELS {
+        return Err(UserError("At most 25 lockdown channels.".into()).into());
+    }
+    let mut s = store::get_settings(&inv.data.db, inv.guild_id.get() as i64).await?;
+    s.lockdown_channels = channels.iter().map(|c| c.get() as i64).collect();
+    store::save_settings(&inv.data.db, &s).await?;
+    Ok(reply::done(Tone::Config, "🔒 Lockdown channels saved", &[("Lockdown channels", channel_summary(channels))], None))
+}
+
 pub async fn list_core(inv: &Invoker<'_>) -> Result<CreateEmbed, Error> {
     require_manage_server(inv).await?;
     let s = store::get_settings(&inv.data.db, inv.guild_id.get() as i64).await?;

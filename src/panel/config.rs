@@ -12,12 +12,14 @@ use crate::moderation::ladder::{self, LadderAction, LadderRule};
 use crate::moderation::perms::require_manage_server;
 use crate::moderation::templates;
 use crate::reply::{refused, Tone};
+use crate::safety::store::{self, SafetySettings};
+use crate::safety::{commands as quar, lockdown, quarantine, verify};
 use crate::settings::{self, GuildSettings};
 use crate::{Data, Error, UserError};
 use poise::serenity_prelude::{
     self as serenity, ButtonStyle, ChannelType, ComponentInteraction, ComponentInteractionDataKind, CreateActionRow, CreateAllowedMentions, CreateEmbed,
     CreateInputText, CreateInteractionResponse, CreateInteractionResponseMessage, CreateModal, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption,
-    EditInteractionResponse, InputTextStyle, MessageFlags, ModalInteraction, RoleId,
+    ChannelId, EditInteractionResponse, InputTextStyle, MessageFlags, ModalInteraction, RoleId,
 };
 use std::future::Future;
 use std::str::FromStr;
@@ -184,6 +186,78 @@ async fn page(inv: &Invoker<'_>, p: Page) -> Result<Views, Error> {
             ];
             (config_embed("🚫 Name filter", desc), rows)
         }
+        Page::Verification => {
+            let sf = store::get_settings(db, gid).await?;
+            let mode = match sf.verify_mode.as_str() {
+                "button" => 1,
+                "quiz" => 2,
+                _ => 0,
+            };
+            let pick = |on: bool| if on { G } else { S };
+            let staff = sf.verify_review == "staff";
+            let chan = sf.verify_channel_id.map_or("not set".to_string(), |c| format!("<#{c}>"));
+            let roles = if sf.verify_roles.is_empty() { "none".to_string() } else { sf.verify_roles.iter().map(|r| format!("<@&{r}>")).collect::<Vec<_>>().join(" ") };
+            let desc = format!(
+                "**Method** {}\n**Quiz answers** {}\n**Channel** {chan}\n**Roles given** {}\n**Questions** {} of 5\n\nTurning this on only affects people who join after. Existing members are left alone.",
+                ["Off", "Button", "Button + quiz"][mode],
+                if staff { "staff check" } else { "auto-check" },
+                cut(roles, 600),
+                sf.quiz_questions.len(),
+            );
+            let ch = CreateSelectMenuKind::Channel { channel_types: Some(vec![ChannelType::Text, ChannelType::News]), default_channels: sf.verify_channel_id.map(|c| vec![ChannelId::new(c as u64)]) };
+            let current: Vec<RoleId> = sf.verify_roles.iter().take(ROLES_MAX).map(|r| RoleId::new(*r as u64)).collect();
+            let rl = CreateSelectMenuKind::Role { default_roles: Some(current).filter(|c| !c.is_empty()) };
+            let roles_sel = CreateSelectMenu::new(PanelId::Config(ConfigId::VerifyRoles).encode(), rl).placeholder("Roles given on verify").min_values(0).max_values(ROLES_MAX as u8);
+            let rows = vec![
+                buttons(vec![
+                    (ConfigId::VerifyMode(0), "Off", pick(mode == 0)),
+                    (ConfigId::VerifyMode(1), "Button", pick(mode == 1)),
+                    (ConfigId::VerifyMode(2), "Button + quiz", pick(mode == 2)),
+                ]),
+                buttons(vec![
+                    (ConfigId::VerifyReview(true), "Staff check", pick(staff)),
+                    (ConfigId::VerifyReview(false), "Auto-check", pick(!staff)),
+                    (ConfigId::Form(Form::Questions), "Questions…", S),
+                    (ConfigId::Form(Form::VerifyDesc), "Description…", S),
+                    (ConfigId::VerifyPost, "Post verify message", S),
+                ]),
+                menu(ConfigId::VerifyChannel, ch, "Verify channel"),
+                CreateActionRow::SelectMenu(roles_sel),
+                back,
+            ];
+            (config_embed("✅ Verification", desc), rows)
+        }
+        Page::Quarantine => {
+            let sf = store::get_settings(db, gid).await?;
+            let role = sf.quarantine_role_id.map_or("not set".to_string(), |r| format!("<@&{r}>"));
+            let chan = sf.review_channel_id.map_or("not set".to_string(), |c| format!("<#{c}>"));
+            let ban = sf.deny_action == "ban";
+            let desc = format!("**Role** {role}\n**Review channel** {chan}\n**Deny** {}", if ban { "ban" } else { "kick" });
+            let rl = CreateSelectMenuKind::Role { default_roles: sf.quarantine_role_id.map(|r| vec![RoleId::new(r as u64)]) };
+            let ch = CreateSelectMenuKind::Channel { channel_types: Some(vec![ChannelType::Text, ChannelType::News]), default_channels: sf.review_channel_id.map(|c| vec![ChannelId::new(c as u64)]) };
+            let rows = vec![
+                menu(ConfigId::QuarRole, rl, "Quarantine role"),
+                menu(ConfigId::QuarChannel, ch, "Review channel"),
+                buttons(vec![
+                    (ConfigId::QuarCreate, "Create role", S),
+                    (ConfigId::QuarDeny(false), "Deny: Kick", if ban { S } else { G }),
+                    (ConfigId::QuarDeny(true), "Deny: Ban", if ban { G } else { S }),
+                    (ConfigId::QuarSync, "Apply channel permissions", S),
+                ]),
+                back,
+            ];
+            (config_embed("🚧 Quarantine", desc), rows)
+        }
+        Page::Lockdown => {
+            let sf = store::get_settings(db, gid).await?;
+            roles_fit(sf.lockdown_channels.len(), "/config lockdown")?;
+            let chans: Vec<ChannelId> = sf.lockdown_channels.iter().map(|c| ChannelId::new(*c as u64)).collect();
+            let desc = format!("**Channels** {}\n**Message** {}\n\nPick the channels below. The list is saved as soon as you choose.", lockdown::channel_summary(&chans), cut(sf.lockdown_message.clone(), 600));
+            let types = vec![ChannelType::Text, ChannelType::News, ChannelType::Voice, ChannelType::Stage, ChannelType::Forum];
+            let kind = CreateSelectMenuKind::Channel { channel_types: Some(types), default_channels: Some(chans).filter(|c| !c.is_empty()) };
+            let sel = CreateSelectMenu::new(PanelId::Config(ConfigId::LockChannels).encode(), kind).placeholder("Lockdown channels").min_values(0).max_values(ROLES_MAX as u8);
+            (config_embed("🔒 Lockdown", desc), vec![CreateActionRow::SelectMenu(sel), buttons(vec![(ConfigId::Form(Form::LockMsg), "Message…", S)]), back])
+        }
     })
 }
 
@@ -209,7 +283,18 @@ fn input(label: &str, style: InputTextStyle, id: &str, required: bool, value: &s
 }
 
 /// Pop-up title and inputs for a form, pre-filled from the current settings.
-fn form_inputs(f: Form, s: &GuildSettings) -> (&'static str, Vec<CreateActionRow>) {
+/// Five `question | answer` lines for the Questions pop-up; unused slots are empty.
+fn question_lines(qs: &[String], answers: &[String]) -> Vec<String> {
+    (0..5)
+        .map(|i| match (qs.get(i), answers.get(i)) {
+            (Some(q), Some(a)) if !a.is_empty() => format!("{q} | {a}"),
+            (Some(q), _) => q.clone(),
+            _ => String::new(),
+        })
+        .collect()
+}
+
+fn form_inputs(f: Form, s: &GuildSettings, sf: &SafetySettings) -> (&'static str, Vec<CreateActionRow>) {
     use InputTextStyle::{Paragraph, Short};
     match f {
         Form::LadderAdd => (
@@ -225,6 +310,12 @@ fn form_inputs(f: Form, s: &GuildSettings) -> (&'static str, Vec<CreateActionRow
         Form::Words => ("Filtered words", vec![input("Words, comma-separated", Paragraph, "0", false, &s.filtered_words.join(", "), WORDS_MAX as u16)]),
         Form::Hoist => ("Hoisting characters", vec![input("Characters", Short, "0", true, &s.hoist_chars, HOIST_MAX as u16)]),
         Form::Fallback => ("Fallback nickname", vec![input("Fallback nickname", Short, "0", true, &s.nick_fallback, 32)]),
+        Form::Questions => {
+            let rows = question_lines(&sf.quiz_questions, &sf.quiz_answers).iter().enumerate().map(|(i, l)| input(&format!("Question {} | answer", i + 1), Short, &i.to_string(), false, l, 1000)).collect();
+            ("Quiz questions", rows)
+        }
+        Form::VerifyDesc => ("Verify message", vec![input("Description", Paragraph, "0", true, &sf.verify_description, 1000)]),
+        Form::LockMsg => ("Lockdown message", vec![input("Message posted in locked channels", Paragraph, "0", true, &sf.lockdown_message, 1000)]),
     }
 }
 
@@ -238,7 +329,8 @@ async fn form_modal(inv: &Invoker<'_>, f: Form) -> Result<CreateModal, Error> {
     require_manage_server(inv).await?;
     let s = settings::get_or_create(&inv.data.db, inv.guild_id.get() as i64).await?;
     form_fits(f, &s)?;
-    let (title, rows) = form_inputs(f, &s);
+    let sf = store::get_settings(&inv.data.db, inv.guild_id.get() as i64).await?;
+    let (title, rows) = form_inputs(f, &s, &sf);
     Ok(CreateModal::new(PanelId::Config(ConfigId::Submit(f)).encode(), title).components(rows))
 }
 
@@ -302,6 +394,35 @@ pub async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIn
         ConfigId::Form(f) => open_modal(ctx, ci, id, form_modal(&inv, f).await, in_ephemeral).await?,
         ConfigId::DecayOff => finish(ctx, ci, id, core::set_decay(&inv, None)).await?,
         ConfigId::FilterSet(on) => finish(ctx, ci, id, core::set_nick_filter(&inv, on)).await?,
+        ConfigId::VerifyMode(m) => finish(ctx, ci, id, verify::set_method_core(&inv, ["off", "button", "quiz"][m as usize % 3])).await?,
+        ConfigId::VerifyReview(staff) => finish(ctx, ci, id, verify::set_review_core(&inv, if staff { "staff" } else { "auto" })).await?,
+        ConfigId::VerifyChannel => {
+            let ComponentInteractionDataKind::ChannelSelect { values } = &ci.data.kind else { return stale(ctx, ci).await };
+            let Some(&ch) = values.first() else { return stale(ctx, ci).await };
+            finish(ctx, ci, id, verify::set_channel_core(&inv, ch)).await?;
+        }
+        ConfigId::VerifyRoles => {
+            let ComponentInteractionDataKind::RoleSelect { values } = &ci.data.kind else { return stale(ctx, ci).await };
+            finish(ctx, ci, id, verify::set_roles_core(&inv, verify::RoleOp::Set(values.clone()))).await?;
+        }
+        ConfigId::VerifyPost => finish(ctx, ci, id, verify::post_core(&inv)).await?,
+        ConfigId::QuarRole => {
+            let ComponentInteractionDataKind::RoleSelect { values } = &ci.data.kind else { return stale(ctx, ci).await };
+            let Some(&r) = values.first() else { return stale(ctx, ci).await };
+            finish(ctx, ci, id, quar::set_role_core(&inv, r)).await?;
+        }
+        ConfigId::QuarCreate => finish(ctx, ci, id, quarantine::create_role(&inv)).await?,
+        ConfigId::QuarChannel => {
+            let ComponentInteractionDataKind::ChannelSelect { values } = &ci.data.kind else { return stale(ctx, ci).await };
+            let Some(&ch) = values.first() else { return stale(ctx, ci).await };
+            finish(ctx, ci, id, quar::set_review_channel_core(&inv, ch)).await?;
+        }
+        ConfigId::QuarDeny(ban) => finish(ctx, ci, id, quar::set_deny_core(&inv, ban)).await?,
+        ConfigId::QuarSync => finish(ctx, ci, id, quarantine::setup_sync(&inv)).await?,
+        ConfigId::LockChannels => {
+            let ComponentInteractionDataKind::ChannelSelect { values } = &ci.data.kind else { return stale(ctx, ci).await };
+            finish(ctx, ci, id, lockdown::set_channels_core(&inv, values)).await?;
+        }
         ConfigId::DmText(_) | ConfigId::Submit(_) => return stale(ctx, ci).await,
     }
     Ok(())
@@ -331,6 +452,9 @@ async fn submit(inv: &Invoker<'_>, id: ConfigId, v: &[String]) -> Result<CreateE
         ConfigId::Submit(Form::Words) => core::set_nick_words(inv, parse_words(val(0))).await,
         ConfigId::Submit(Form::Hoist) => core::set_hoist(inv, val(0).to_string()).await,
         ConfigId::Submit(Form::Fallback) => core::set_fallback(inv, val(0).to_string()).await,
+        ConfigId::Submit(Form::Questions) => verify::set_question_lines_core(inv, v).await,
+        ConfigId::Submit(Form::VerifyDesc) => verify::set_description_core(inv, val(0).to_string()).await,
+        ConfigId::Submit(Form::LockMsg) => lockdown::set_message_core(inv, val(0).to_string()).await,
         _ => Err(bad(STALE).into()),
     }
 }
@@ -379,10 +503,32 @@ mod tests {
     }
 
     #[test]
+    fn question_inputs_prefill() {
+        let qs = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(question_lines(&qs, &["x".to_string()]), ["a | x", "b", "", "", ""]);
+    }
+
+    #[test]
     fn modals_fit_discord() {
         let s = GuildSettings::defaults(1);
-        for f in [Form::LadderAdd, Form::LadderRemove, Form::DecayOn, Form::Words, Form::Hoist, Form::Fallback] {
-            let (title, rows) = form_inputs(f, &s);
+        let sf = SafetySettings {
+            guild_id: 1,
+            quarantine_role_id: None,
+            review_channel_id: None,
+            deny_action: "kick".into(),
+            verify_mode: "off".into(),
+            verify_review: "staff".into(),
+            verify_channel_id: None,
+            verify_roles: vec![],
+            verify_description: "d".into(),
+            verify_message_id: None,
+            quiz_questions: vec!["q".repeat(45); 5],
+            quiz_answers: vec!["a".repeat(100); 5],
+            lockdown_channels: vec![],
+            lockdown_message: "m".repeat(1000),
+        };
+        for f in [Form::LadderAdd, Form::LadderRemove, Form::DecayOn, Form::Words, Form::Hoist, Form::Fallback, Form::Questions, Form::VerifyDesc, Form::LockMsg] {
+            let (title, rows) = form_inputs(f, &s, &sf);
             assert!(title.chars().count() <= 45 && (1..=5).contains(&rows.len()));
             let v = serde_json::to_value(CreateModal::new(PanelId::Config(ConfigId::Submit(f)).encode(), title).components(rows)).unwrap();
             assert!(v["custom_id"].as_str().unwrap().len() <= 100);
