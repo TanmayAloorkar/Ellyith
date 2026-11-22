@@ -123,7 +123,7 @@ pub fn case_embed(c: &Case, ev: CaseEvent) -> CreateEmbed {
     };
     let reason = c.reason.as_deref().filter(|r| !r.is_empty()).unwrap_or("No reason given");
     let mut e = CreateEmbed::new()
-        .title(format!("Case #{} Â· {}", c.case_number, c.kind.label()))
+        .title(format!("Case #{} · {}", c.case_number, c.kind.label()))
         .field("Target", format!("<@{0}> ({0})", c.target_id), true)
         .field("Moderator", actor, true)
         .field("Reason", truncate(reason, 1024), false);
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn embed_fields() {
         let v = serde_json::to_value(case_embed(&case(), CaseEvent::Created)).unwrap();
-        assert_eq!(v["title"], "Case #7 Â· Timeout");
+        assert_eq!(v["title"], "Case #7 · Timeout");
         let f = v["fields"].as_array().unwrap();
         let get = |n: &str| f.iter().find(|x| x["name"] == n).unwrap()["value"].as_str().unwrap().to_string();
         assert_eq!(get("Reason").chars().count(), 1024);
