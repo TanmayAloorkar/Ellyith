@@ -9,6 +9,7 @@ pub enum Category {
     Members,
     NamesVoice,
     Channels,
+    Safety,
     Records,
     Config,
 }
@@ -37,6 +38,12 @@ pub enum Action {
     NoteList,
     NoteView,
     NoteDelete,
+    Quarantine,
+    Release,
+    WaitingReview,
+    HealthCheck,
+    Lockdown,
+    EndLockdown,
 }
 
 /// Config sub-views opened from the Config category.
@@ -108,6 +115,8 @@ pub enum PanelId {
     Verify,
     /// Quiz pop-up submit.
     VerifyQuiz,
+    /// Waiting-review member select.
+    ReviewPick,
 }
 
 const PAGES: [(Page, &str); 7] = [
@@ -197,15 +206,16 @@ impl ConfigId {
     }
 }
 
-const CATEGORIES: [(Category, &str); 5] = [
+const CATEGORIES: [(Category, &str); 6] = [
     (Category::Members, "members"),
     (Category::NamesVoice, "names"),
     (Category::Channels, "channels"),
+    (Category::Safety, "safety"),
     (Category::Records, "records"),
     (Category::Config, "config"),
 ];
 
-const ACTIONS: [(Action, &str); 22] = [
+const ACTIONS: [(Action, &str); 28] = [
     (Action::Warn, "warn"),
     (Action::Timeout, "timeout"),
     (Action::Untimeout, "untimeout"),
@@ -228,6 +238,12 @@ const ACTIONS: [(Action, &str); 22] = [
     (Action::NoteList, "notelist"),
     (Action::NoteView, "noteview"),
     (Action::NoteDelete, "notedelete"),
+    (Action::Quarantine, "quarantine"),
+    (Action::Release, "release"),
+    (Action::WaitingReview, "review"),
+    (Action::HealthCheck, "health"),
+    (Action::Lockdown, "lockdown"),
+    (Action::EndLockdown, "unlock"),
 ];
 
 impl Category {
@@ -275,6 +291,7 @@ impl PanelId {
             PanelId::Config(c) => c.encode(),
             PanelId::Verify => "mp:v".into(),
             PanelId::VerifyQuiz => "mp:vq".into(),
+            PanelId::ReviewPick => "mp:rp".into(),
             PanelId::Review(approve, u) => format!("mp:rv:{}:{}", if *approve { 'a' } else { 'd' }, u.get()),
         }
     }
@@ -292,6 +309,7 @@ impl PanelId {
             ["m", a, u, c] => Some(PanelId::Modal(Action::parse(a)?, user(u)?, chan(c)?)),
             ["v"] => Some(PanelId::Verify),
             ["vq"] => Some(PanelId::VerifyQuiz),
+            ["rp"] => Some(PanelId::ReviewPick),
             ["rv", k @ ("a" | "d"), u] => Some(PanelId::Review(*k == "a", user(u)??)),
             ["g", rest @ ..] => ConfigId::decode(rest).map(PanelId::Config),
             _ => None,
@@ -334,6 +352,9 @@ mod tests {
             PanelId::Review(false, UserId::new(1)),
             PanelId::Verify,
             PanelId::VerifyQuiz,
+            PanelId::ReviewPick,
+            PanelId::Category(Category::Safety),
+            PanelId::Action(Action::EndLockdown),
         ];
         all.extend(config_ids().into_iter().map(PanelId::Config));
         all.extend(CATEGORIES.iter().map(|(c, _)| PanelId::Category(*c)));
@@ -345,6 +366,9 @@ mod tests {
         }
         assert_eq!(PanelId::Verify.encode(), "mp:v");
         assert_eq!(PanelId::VerifyQuiz.encode(), "mp:vq");
+        assert_eq!(PanelId::ReviewPick.encode(), "mp:rp");
+        assert_eq!(PanelId::Category(Category::Safety).encode(), "mp:c:safety");
+        assert_eq!(PanelId::Action(Action::EndLockdown).encode(), "mp:a:unlock");
         assert_eq!(PanelId::Review(true, UserId::new(7)).encode(), "mp:rv:a:7");
         assert_eq!(PanelId::Review(false, UserId::new(7)).encode(), "mp:rv:d:7");
         for junk in ["", "mp:", "mp:zz", "mp:m:kick:abc:-", "other:home", "mp:c:members:extra", "mp:m:kick:0:-", "mp:p:move:+5", "mp:g", "mp:g:o:zz", "mp:g:ds:2", "mp:g:lh:nope", "mp:g:dt:ban:x", "mp:g:dt:note", "mp:rv:x:1", "mp:rv:a:0", "mp:rv:a"] {

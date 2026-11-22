@@ -305,7 +305,8 @@ pub fn handled_card(row_title: &str, why: &str, footer: &str) -> CreateEmbed {
     reply::done(Tone::Safety, row_title, &[("Why", why.to_string())], Some(footer))
 }
 
-pub async fn post_review_card(ctx: &serenity::Context, data: &Data, guild_id: GuildId, row: &QuarantineRow) -> Result<(), Error> {
+/// The review card for a quarantined member, with live account details.
+pub async fn card_for(ctx: &serenity::Context, data: &Data, guild_id: GuildId, row: &QuarantineRow) -> Result<(CreateEmbed, Vec<CreateActionRow>), Error> {
     let s = store::get_settings(&data.db, row.guild_id).await?;
     let user = UserId::new(row.user_id as u64);
     let (name, age, joined) = match guild_id.member(ctx, user).await {
@@ -318,7 +319,11 @@ pub async fn post_review_card(ctx: &serenity::Context, data: &Data, guild_id: Gu
             (u.name.clone(), ago(u.created_at().unix_timestamp()), "left the server".into())
         }
     };
-    let (embed, rows) = review_card(row, &name, &age, &joined, &s.deny_action);
+    Ok(review_card(row, &name, &age, &joined, &s.deny_action))
+}
+
+pub async fn post_review_card(ctx: &serenity::Context, data: &Data, guild_id: GuildId, row: &QuarantineRow) -> Result<(), Error> {
+    let (embed, rows) = card_for(ctx, data, guild_id, row).await?;
     let msg = CreateMessage::new().embed(embed).components(rows);
     if let Some(m) = send_log_message(&ctx.http, &data.db, guild_id, LogCategory::ModActions, msg).await {
         store::quarantine_set_review(&data.db, row.guild_id, row.user_id, m.channel_id.get() as i64, m.id.get() as i64).await?;
