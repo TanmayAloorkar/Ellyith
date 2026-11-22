@@ -394,7 +394,7 @@ async fn sync(ctx: &serenity::Context, guild_id: GuildId, role: RoleId, s: &Safe
     Ok((updated, failed))
 }
 
-fn sync_reply(title: &str, updated: usize, failed: Vec<String>) -> CreateEmbed {
+pub fn sync_lines(updated: usize, failed: Vec<String>) -> Vec<(&'static str, String)> {
     let mut lines = vec![("Updated", format!("{updated} channels"))];
     if !failed.is_empty() {
         let more = failed.len().saturating_sub(10);
@@ -404,10 +404,20 @@ fn sync_reply(title: &str, updated: usize, failed: Vec<String>) -> CreateEmbed {
         }
         lines.push(("Couldn't edit", names));
     }
-    reply::done(Tone::Safety, title, &lines, None)
+    lines
+}
+
+fn sync_reply(title: &str, updated: usize, failed: Vec<String>) -> CreateEmbed {
+    reply::done(Tone::Safety, title, &sync_lines(updated, failed), None)
 }
 
 pub async fn setup_sync(inv: &Invoker<'_>) -> Result<CreateEmbed, Error> {
+    let (updated, failed) = setup_sync_counts(inv).await?;
+    Ok(sync_reply("🚧 Channel permissions updated", updated, failed))
+}
+
+/// Same sync as `setup_sync`, returning the counts so config replies can carry them.
+pub async fn setup_sync_counts(inv: &Invoker<'_>) -> Result<(usize, Vec<String>), Error> {
     require_manage_server(inv).await?;
     let s = store::get_settings(&inv.data.db, inv.guild_id.get() as i64).await?;
     let role = {
@@ -415,8 +425,7 @@ pub async fn setup_sync(inv: &Invoker<'_>) -> Result<CreateEmbed, Error> {
         s.quarantine_role_id.map(|r| RoleId::new(r as u64)).filter(|r| g.roles.contains_key(r))
     }
     .ok_or_else(|| UserError(NOT_SET_UP.into()))?;
-    let (updated, failed) = sync(inv.ctx, inv.guild_id, role, &s).await?;
-    Ok(sync_reply("🚧 Channel permissions updated", updated, failed))
+    sync(inv.ctx, inv.guild_id, role, &s).await
 }
 
 pub async fn create_role(inv: &Invoker<'_>) -> Result<CreateEmbed, Error> {
@@ -479,6 +488,18 @@ async fn join(ctx: &serenity::Context, data: &Data, member: &Member) -> Result<b
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sync_lines_lists_failures_only_when_present() {
+        let l = super::sync_lines(5, vec![]);
+        assert_eq!(l, vec![("Updated", "5 channels".to_string())]);
+        let failed: Vec<String> = (0..12).map(|i| format!("#c{i}")).collect();
+        let l = super::sync_lines(3, failed);
+        assert_eq!(l.len(), 2);
+        assert_eq!(l[1].0, "Couldn't edit");
+        assert!(l[1].1.ends_with("#c9 +2"), "{}", l[1].1);
+        assert!(!l[1].1.contains("#c10"));
+    }
+
     use super::*;
 
     #[test]

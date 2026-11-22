@@ -2,7 +2,7 @@
 use crate::invoker::Invoker;
 use crate::moderation::perms::require_manage_server;
 use crate::reply::{self, Tone};
-use crate::safety::quarantine::{bot_top, create_role, list_core, quarantine_core, release_core, setup_sync, validate_role};
+use crate::safety::quarantine::{bot_top, create_role, list_core, quarantine_core, release_core, setup_sync, setup_sync_counts, sync_lines, validate_role};
 use crate::safety::store;
 use crate::{Context, Error, UserError};
 use poise::serenity_prelude::{ChannelId, CreateEmbed, GuildChannel, Role, RoleId, User};
@@ -19,8 +19,10 @@ pub async fn set_role_core(inv: &Invoker<'_>, role: RoleId) -> Result<CreateEmbe
     let mut s = store::get_settings(&inv.data.db, inv.guild_id.get() as i64).await?;
     s.quarantine_role_id = Some(role.get() as i64);
     store::save_settings(&inv.data.db, &s).await?;
-    let _ = setup_sync(inv).await?;
-    Ok(reply::done(Tone::Config, "🚧 Quarantine role saved", &[("Role", format!("<@&{}>", role.get()))], None))
+    let (updated, failed) = setup_sync_counts(inv).await?;
+    let mut lines = vec![("Role", format!("<@&{}>", role.get()))];
+    lines.extend(sync_lines(updated, failed));
+    Ok(reply::done(Tone::Config, "🚧 Quarantine role saved", &lines, None))
 }
 
 pub async fn set_review_channel_core(inv: &Invoker<'_>, channel: ChannelId) -> Result<CreateEmbed, Error> {
@@ -28,11 +30,13 @@ pub async fn set_review_channel_core(inv: &Invoker<'_>, channel: ChannelId) -> R
     let mut s = store::get_settings(&inv.data.db, inv.guild_id.get() as i64).await?;
     s.review_channel_id = Some(channel.get() as i64);
     store::save_settings(&inv.data.db, &s).await?;
+    let mut lines = vec![("Channel", format!("<#{}>", channel.get()))];
     // Without a role there is nothing to sync yet.
     if s.quarantine_role_id.is_some() {
-        let _ = setup_sync(inv).await?;
+        let (updated, failed) = setup_sync_counts(inv).await?;
+        lines.extend(sync_lines(updated, failed));
     }
-    Ok(reply::done(Tone::Config, "🚧 Review channel saved", &[("Channel", format!("<#{}>", channel.get()))], None))
+    Ok(reply::done(Tone::Config, "🚧 Review channel saved", &lines, None))
 }
 
 pub async fn set_deny_core(inv: &Invoker<'_>, ban: bool) -> Result<CreateEmbed, Error> {
