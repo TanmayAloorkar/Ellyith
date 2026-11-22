@@ -17,16 +17,29 @@ fn reason_of(c: &Case) -> &str {
     c.reason.as_deref().filter(|r| !r.is_empty()).unwrap_or("No reason given")
 }
 
-/// Whole lines only, so a field cut at 1024 never ends mid-line.
-fn fit_lines(lines: Vec<String>) -> Vec<String> {
+/// Split into fields of at most 1024 chars, whole lines only; none are dropped.
+fn chunk_lines(lines: Vec<String>) -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = Vec::new();
     let mut used = 0;
-    lines
-        .into_iter()
-        .take_while(|l| {
-            used += l.chars().count() + 1;
-            used <= FIELD_MAX + 1
-        })
-        .collect()
+    for l in lines {
+        let len = l.chars().count() + 1;
+        match out.last_mut() {
+            Some(cur) if used + len <= FIELD_MAX + 1 => {
+                cur.push(l);
+                used += len;
+            }
+            _ => {
+                out.push(vec![l]);
+                used = len;
+            }
+        }
+    }
+    out
+}
+
+/// First field gets `name`, follow-on fields a zero-width name.
+fn recent_groups(name: &'static str, lines: Vec<String>) -> Vec<(&'static str, Vec<String>)> {
+    chunk_lines(lines).into_iter().enumerate().map(|(i, c)| (if i == 0 { name } else { "\u{200b}" }, c)).collect()
 }
 
 fn not_found(what: &str) -> Error {
@@ -61,7 +74,7 @@ pub async fn case_view_core(inv: &Invoker<'_>, number: i32) -> Result<CreateEmbe
     if let Some(by) = c.removed_by {
         e = e.footer(CreateEmbedFooter::new(format!("Removed by <@{by}>")));
     }
-    Ok(e)
+    Ok(e.colour(Tone::Records.colour()))
 }
 
 /// Change a case's reason.
@@ -77,7 +90,7 @@ pub async fn case_reason_core(inv: &Invoker<'_>, number: i32, text: String) -> R
     authorize(inv, Permissions::MODERATE_MEMBERS, Some(UserId::new(existing.target_id as u64))).await?;
     let c = cases::set_reason(db, g.get() as i64, number, Some(text.clone())).await?.ok_or_else(|| not_found("Case"))?;
     send_log(&inv.ctx.http, db, g, LogCategory::ModActions, case_embed(&c, CaseEvent::ReasonEdited)).await;
-    Ok(done(Tone::Records, &format!("✏️ Case #{number} reason updated"), &[("Reason", text)], log_footer(inv).await?.as_deref()))
+    Ok(done(Tone::Records, &format!("✏️ Case #{number} reason updated"), &[("Reason", text)], log_footer(inv).await.as_deref()))
 }
 
 /// Remove a case (kept on record, no longer counted).
@@ -95,7 +108,7 @@ pub async fn case_remove_core(inv: &Invoker<'_>, number: i32) -> Result<CreateEm
     let by = inv.user.id.get() as i64;
     let c = cases::soft_remove(db, g.get() as i64, number, by).await?.ok_or_else(gone)?;
     send_log(&inv.ctx.http, db, g, LogCategory::ModActions, case_embed(&c, CaseEvent::Removed { by })).await;
-    Ok(done(Tone::Records, &format!("🗑️ Case #{number} removed"), &[("Note", "Kept on record, no longer counted.".into())], log_footer(inv).await?.as_deref()))
+    Ok(done(Tone::Records, &format!("🗑️ Case #{number} removed"), &[("Note", "Kept on record, no longer counted.".into())], log_footer(inv).await.as_deref()))
 }
 
 /// Show a user's case history.
@@ -126,7 +139,7 @@ pub async fn history_core(inv: &Invoker<'_>, user: UserId) -> Result<CreateEmbed
         .collect();
     let n = all.len();
     let title = format!("📜 {} — {n} case{}", username(inv, user).await, if n == 1 { "" } else { "s" });
-    Ok(list(Tone::Records, &title, Some(&format!("Active warnings: {active} · {decay}")), &[("Recent", fit_lines(lines))]))
+    Ok(list(Tone::Records, &title, Some(&format!("Active warnings: {active} · {decay}")), &recent_groups("Recent", lines)))
 }
 
 /// Private moderator notes.
@@ -164,7 +177,7 @@ pub async fn note_list_core(inv: &Invoker<'_>, user: UserId) -> Result<CreateEmb
         .collect();
     let count = all.len();
     let title = format!("📝 {} — {count} note{}", username(inv, user).await, if count == 1 { "" } else { "s" });
-    Ok(list(Tone::Records, &title, None, &[("Notes", fit_lines(lines))]))
+    Ok(list(Tone::Records, &title, None, &recent_groups("Notes", lines)))
 }
 
 /// Show a full note by its id.
@@ -223,7 +236,7 @@ pub async fn mywarnings(ctx: Context<'_>) -> Result<(), Error> {
             format!("**#{} {}**{by} {} · {}", c.case_number, c.kind.label(), truncate(reason_of(c), 40), c.created_at.format("%-d %b"))
         })
         .collect();
-    reply::send(ctx, list(Tone::Records, "📜 Your record", Some(&format!("Active warnings: {active}")), &[("Recent", fit_lines(lines))])).await
+    reply::send(ctx, list(Tone::Records, "📜 Your record", Some(&format!("Active warnings: {active}")), &recent_groups("Recent", lines))).await
 }
 
 #[cfg(test)]
@@ -231,11 +244,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fit_lines_keeps_whole_lines_under_the_field_limit() {
-        let lines: Vec<String> = (0..10).map(|_| "x".repeat(300)).collect();
-        let kept = fit_lines(lines);
-        assert_eq!(kept.len(), 3);
-        assert!(kept.join("\n").chars().count() <= FIELD_MAX);
-        assert!(fit_lines(vec![]).is_empty());
+    fn chunks_keep_all_lines_and_fit_fields() {
+        let lines: Vec<String> = (0..25).map(|_| "x".repeat(300)).collect();
+        let chunks = chunk_lines(lines.clone());
+        assert_eq!(chunks.iter().map(Vec::len).sum::<usize>(), 25);
+        assert!(chunks.iter().all(|c| c.join("\n").chars().count() <= FIELD_MAX));
+        let g = recent_groups("Recent", lines);
+        assert_eq!((g[0].0, g[1].0), ("Recent", "\u{200b}"));
+        assert!(chunk_lines(vec![]).is_empty());
     }
 }

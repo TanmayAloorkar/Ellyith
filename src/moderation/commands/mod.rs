@@ -31,12 +31,11 @@ pub(crate) async fn username(inv: &Invoker<'_>, id: UserId) -> String {
 }
 
 /// "Logged to #channel" when the mod_actions log is set and its channel name is known.
-pub(crate) async fn log_footer(inv: &Invoker<'_>) -> Result<Option<String>, Error> {
-    let Some(ch) = channel_for(&inv.data.db, inv.guild_id.get() as i64, LogCategory::ModActions).await? else {
-        return Ok(None);
-    };
+/// A lookup failure means no footer: the action has already happened.
+pub(crate) async fn log_footer(inv: &Invoker<'_>) -> Option<String> {
+    let ch = channel_for(&inv.data.db, inv.guild_id.get() as i64, LogCategory::ModActions).await.ok().flatten()?;
     let id = ChannelId::new(ch as u64);
-    Ok(inv.ctx.cache.guild(inv.guild_id).and_then(|g| g.channels.get(&id).map(|c| format!("Logged to #{}", c.name))))
+    inv.ctx.cache.guild(inv.guild_id).and_then(|g| g.channels.get(&id).map(|c| format!("Logged to #{}", c.name)))
 }
 
 /// Past-tense title prefix for the done embed.
@@ -76,7 +75,7 @@ pub(crate) async fn action_reply(
             lines.push(("DM", if c.dm_failed { "Could not be delivered" } else { "Delivered" }.into()));
         }
     }
-    let footer = log_footer(inv).await?;
+    let footer = log_footer(inv).await;
     Ok(done(tone, &format!("{} {name}", done_label(kind)), &lines, footer.as_deref()))
 }
 
