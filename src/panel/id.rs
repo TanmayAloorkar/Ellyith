@@ -102,6 +102,8 @@ pub enum PanelId {
     /// Pop-up submit.
     Modal(Action, Option<UserId>, Option<ChannelId>),
     Config(ConfigId),
+    /// Quarantine review card: approve (true) or deny, for this user.
+    Review(bool, UserId),
 }
 
 const PAGES: [(Page, &str); 7] = [
@@ -267,6 +269,7 @@ impl PanelId {
             PanelId::PickChannel(a, u) => format!("mp:p:{}:{}", a.token(), opt(u.map(|u| u.get()))),
             PanelId::Modal(a, u, c) => format!("mp:m:{}:{}:{}", a.token(), opt(u.map(|u| u.get())), opt(c.map(|c| c.get()))),
             PanelId::Config(c) => c.encode(),
+            PanelId::Review(approve, u) => format!("mp:rv:{}:{}", if *approve { 'a' } else { 'd' }, u.get()),
         }
     }
 
@@ -281,6 +284,7 @@ impl PanelId {
             ["u", a] => Action::parse(a).map(PanelId::PickUser),
             ["p", a, u] => Some(PanelId::PickChannel(Action::parse(a)?, user(u)?)),
             ["m", a, u, c] => Some(PanelId::Modal(Action::parse(a)?, user(u)?, chan(c)?)),
+            ["rv", k @ ("a" | "d"), u] => Some(PanelId::Review(*k == "a", user(u)??)),
             ["g", rest @ ..] => ConfigId::decode(rest).map(PanelId::Config),
             _ => None,
         }
@@ -318,6 +322,8 @@ mod tests {
             PanelId::PickChannel(Action::Purge, None),
             PanelId::Modal(Action::Move, Some(big_u), Some(big_c)),
             PanelId::Modal(Action::Unban, None, None),
+            PanelId::Review(true, big_u),
+            PanelId::Review(false, UserId::new(1)),
         ];
         all.extend(config_ids().into_iter().map(PanelId::Config));
         all.extend(CATEGORIES.iter().map(|(c, _)| PanelId::Category(*c)));
@@ -327,7 +333,9 @@ mod tests {
             assert!(s.starts_with("mp:") && s.len() <= 100);
             assert_eq!(PanelId::decode(&s), Some(id));
         }
-        for junk in ["", "mp:", "mp:zz", "mp:m:kick:abc:-", "other:home", "mp:c:members:extra", "mp:m:kick:0:-", "mp:p:move:+5", "mp:g", "mp:g:o:zz", "mp:g:ds:2", "mp:g:lh:nope", "mp:g:dt:ban:x", "mp:g:dt:note"] {
+        assert_eq!(PanelId::Review(true, UserId::new(7)).encode(), "mp:rv:a:7");
+        assert_eq!(PanelId::Review(false, UserId::new(7)).encode(), "mp:rv:d:7");
+        for junk in ["", "mp:", "mp:zz", "mp:m:kick:abc:-", "other:home", "mp:c:members:extra", "mp:m:kick:0:-", "mp:p:move:+5", "mp:g", "mp:g:o:zz", "mp:g:ds:2", "mp:g:lh:nope", "mp:g:dt:ban:x", "mp:g:dt:note", "mp:rv:x:1", "mp:rv:a:0", "mp:rv:a"] {
             assert_eq!(PanelId::decode(junk), None, "{junk}");
         }
     }

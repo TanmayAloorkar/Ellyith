@@ -33,7 +33,7 @@ impl std::error::Error for UserError {}
 pub fn all_commands() -> Vec<poise::Command<Data, Error>> {
     {
         use moderation::commands::{cases, punish::*};
-        vec![ping(), moderation::commands::config::config(), warn(), timeout(), untimeout(), kick(), ban(), tempban(), unban(), cases::case(), cases::history(), cases::note(), cases::mywarnings(), moderation::commands::nick::nick(), moderation::commands::voice::voice(), moderation::commands::purge::purge()]
+        vec![ping(), moderation::commands::config::config(), warn(), timeout(), untimeout(), kick(), ban(), tempban(), unban(), cases::case(), cases::history(), cases::note(), cases::mywarnings(), moderation::commands::nick::nick(), moderation::commands::voice::voice(), moderation::commands::purge::purge(), safety::commands::quarantine()]
     }
 }
 
@@ -42,4 +42,12 @@ pub fn all_commands() -> Vec<poise::Command<Data, Error>> {
 async fn ping(ctx: Context<'_>) -> Result<(), Error> {
     ctx.say("Pong").await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn registers_quarantine() {
+        assert!(super::all_commands().iter().any(|c| c.name == "quarantine"));
+    }
 }

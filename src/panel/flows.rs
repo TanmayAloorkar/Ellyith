@@ -7,13 +7,16 @@ use crate::moderation::commands::cases::{case_reason_core, case_remove_core, cas
 use crate::moderation::commands::nick::set_nick;
 use crate::moderation::commands::punish::punish;
 use crate::moderation::commands::voice::voice_action;
+use crate::moderation::perms::authorize;
 use crate::moderation::purge::{self, parse_amount};
 use crate::reply::{refused, Tone};
+use crate::safety::quarantine::{deny, handled_card, release_core};
+use crate::safety::store;
 use crate::{Data, Error, UserError};
 use poise::serenity_prelude::{
     self as serenity, ActionRowComponent, ChannelId, ChannelType, ComponentInteraction, ComponentInteractionDataKind, CreateActionRow, CreateAllowedMentions,
-    CreateEmbed, CreateInputText, CreateInteractionResponse, CreateInteractionResponseMessage, CreateModal, CreateSelectMenu, CreateSelectMenuKind,
-    EditInteractionResponse, InputTextStyle, MessageFlags, ModalInteraction, UserId,
+    CreateEmbed, CreateInputText, CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateModal, CreateSelectMenu, CreateSelectMenuKind,
+    EditInteractionResponse, EditMessage, InputTextStyle, MessageFlags, ModalInteraction, Permissions, UserId,
 };
 
 pub(super) const STALE: &str = "This panel is out of date — ask an admin to run /config panel again.";
@@ -218,6 +221,7 @@ async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIntera
         }
         PanelId::Category(c) => show(view::category(c)),
         PanelId::Config(c) => return super::config::on_component(ctx, data, ci, c).await,
+        PanelId::Review(approve, user) => return on_review(ctx, data, ci, approve, user).await,
         PanelId::Action(Action::Purge) => prompt(
             Action::Purge,
             "which channel?",
@@ -255,6 +259,43 @@ async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIntera
         PanelId::Modal(..) => return stale(ctx, ci).await,
     };
     ci.create_response(&ctx.http, reply).await?;
+    Ok(())
+}
+
+/// Approve / Deny on a quarantine review card. The card is a public message, so the reply is a deferred ephemeral followup.
+async fn on_review(ctx: &serenity::Context, data: &Data, ci: &ComponentInteraction, approve: bool, user: UserId) -> Result<(), Error> {
+    ci.create_response(&ctx.http, CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new().ephemeral(true))).await?;
+    let inv = Invoker::from_interaction(ctx, data, ci.guild_id.expect("checked in handle"), &ci.user);
+    let strip = |embed: Option<CreateEmbed>| {
+        let mut e = EditMessage::new().components(vec![]);
+        if let Some(embed) = embed {
+            e = e.embed(embed);
+        }
+        e
+    };
+    let res = async {
+        authorize(&inv, Permissions::MODERATE_MEMBERS, Some(user)).await?;
+        let Some(row) = store::quarantine_get(&data.db, inv.guild_id.get() as i64, user.get() as i64).await? else {
+            let title = ci.message.embeds.first().and_then(|e| e.title.clone()).unwrap_or_default();
+            let card = handled_card(&title, "Already handled", "Already handled");
+            if let Err(e) = ci.channel_id.edit_message(ctx, ci.message.id, strip(Some(card))).await {
+                tracing::warn!("marking stale review card failed: {e}");
+            }
+            return Err(UserError("Already handled.".into()).into());
+        };
+        let embed = if approve { release_core(&inv, user).await? } else { deny(&inv, user).await? };
+        // Release/deny marked the stored card; a copy elsewhere (the Waiting-review message) just loses its buttons.
+        if row.review_message_id != Some(ci.message.id.get() as i64) {
+            if let Err(e) = ci.channel_id.edit_message(ctx, ci.message.id, strip(None)).await {
+                tracing::warn!("stripping review buttons failed: {e}");
+            }
+        }
+        Ok::<_, Error>(embed)
+    }
+    .await;
+    let embed = outcome_of(PanelId::Review(approve, user), false, res);
+    let followup = CreateInteractionResponseFollowup::new().embed(embed).ephemeral(true).allowed_mentions(CreateAllowedMentions::new());
+    ci.create_followup(&ctx.http, followup).await?;
     Ok(())
 }
 

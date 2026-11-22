@@ -6,6 +6,7 @@ use crate::moderation::cases::{Actor, CaseKind, NewCase};
 use crate::moderation::commands::punish::punish;
 use crate::moderation::commands::{log_footer, username};
 use crate::moderation::perms::{authorize, is_absent, member_facts, require_manage_server, require_member};
+use crate::panel::id::PanelId;
 use crate::reply::{self, Tone};
 use crate::safety::logic::{roles_to_save, RoleInfo};
 use crate::safety::store::{self, QuarantineRow, SafetySettings};
@@ -63,7 +64,7 @@ impl FromStr for QuarantineReason {
     }
 }
 
-fn reason_label(raw: &str) -> &str {
+pub fn reason_label(raw: &str) -> &str {
     raw.parse::<QuarantineReason>().map(|r| r.label()).unwrap_or(raw)
 }
 
@@ -88,7 +89,7 @@ fn setup_in(ctx: &serenity::Context, guild_id: GuildId, s: &SafetySettings) -> R
     Ok(require_setup(s, &g)?)
 }
 
-async fn bot_top(ctx: &serenity::Context, guild_id: GuildId) -> Result<u16, Error> {
+pub(super) async fn bot_top(ctx: &serenity::Context, guild_id: GuildId) -> Result<u16, Error> {
     let id = ctx.cache.current_user().id;
     let bot = guild_id.member(ctx, id).await?;
     Ok(member_facts(ctx, guild_id, &bot).await?.top_role_position)
@@ -292,11 +293,10 @@ pub fn review_card(row: &QuarantineRow, username: &str, account_age: &str, joine
     }
     let footer = if deny_action == "ban" { "Deny bans them (set to kick in Config)" } else { "Deny kicks them (set to ban in Config)" };
     let embed = reply::done(Tone::Safety, &format!("🚧 {username} quarantined"), &lines, Some(footer));
-    // shortcut: ids built by hand until Task 4's PanelId::Review codec, which must produce these exact strings.
-    let id = row.user_id;
+    let user = UserId::new(row.user_id as u64);
     let buttons = vec![
-        CreateButton::new(format!("mp:rv:a:{id}")).label("Approve").emoji(ReactionType::Unicode(APPROVE_EMOJI.into())).style(ButtonStyle::Success),
-        CreateButton::new(format!("mp:rv:d:{id}")).label("Deny").emoji(ReactionType::Unicode(DENY_EMOJI.into())).style(ButtonStyle::Danger),
+        CreateButton::new(PanelId::Review(true, user).encode()).label("Approve").emoji(ReactionType::Unicode(APPROVE_EMOJI.into())).style(ButtonStyle::Success),
+        CreateButton::new(PanelId::Review(false, user).encode()).label("Deny").emoji(ReactionType::Unicode(DENY_EMOJI.into())).style(ButtonStyle::Danger),
     ];
     (embed, vec![CreateActionRow::Buttons(buttons)])
 }
