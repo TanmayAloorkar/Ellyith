@@ -2,6 +2,7 @@ use crate::moderation::actions::record_case;
 use crate::moderation::cases::{Actor, CaseKind, NewCase};
 use crate::moderation::commands::config::ephemeral;
 use crate::moderation::nickname::check_name;
+use crate::invoker::Invoker;
 use crate::moderation::perms::{authorize, require_member};
 use crate::{Context, Error, UserError};
 use poise::serenity_prelude::{EditMember, Permissions, User};
@@ -29,8 +30,9 @@ pub async fn nick_reset(ctx: Context<'_>, user: User) -> Result<(), Error> {
 
 async fn apply(ctx: Context<'_>, user: User, nick: Option<String>) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
-    let s = authorize(ctx, Permissions::MANAGE_NICKNAMES, Some(user.id)).await?;
-    require_member(ctx, user.id).await?;
+    let inv = Invoker::from_poise(ctx)?;
+    let s = authorize(&inv, Permissions::MANAGE_NICKNAMES, Some(user.id)).await?;
+    require_member(&inv, user.id).await?;
     if let Some(v) = nick.as_deref().filter(|_| s.nick_filter_enabled).and_then(|n| check_name(n, &s.filtered_words, &s.hoist_chars)) {
         return Err(UserError(format!("That nickname {}; the filter would reset it.", v.describe())).into());
     }

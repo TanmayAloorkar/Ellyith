@@ -36,8 +36,7 @@ async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
                 "Something went wrong. The error was logged.".to_string()
             }
         };
-        let reply = poise::CreateReply::default().content(text).ephemeral(true);
-        if let Err(e) = ctx.send(reply).await {
+        if let Err(e) = aio_bot::reply::send(ctx, aio_bot::reply::refused(&text, false)).await {
             tracing::error!("failed to send error reply: {e}");
         }
     }

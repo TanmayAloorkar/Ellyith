@@ -2,6 +2,7 @@ use crate::duration::{parse_duration, MAX_TIMEOUT_SECS};
 use crate::moderation::actions::{execute, ActionRequest};
 use crate::moderation::cases::{Actor, CaseKind};
 use crate::moderation::commands::config::ephemeral;
+use crate::invoker::Invoker;
 use crate::moderation::perms::{authorize, require_member};
 use crate::{Context, Error, UserError};
 use poise::serenity_prelude::{Permissions, User};
@@ -22,9 +23,10 @@ async fn run(
 ) -> Result<(), Error> {
     // Defer first: the DM and Discord calls can exceed the 3 s response window.
     ctx.defer_ephemeral().await?;
-    authorize(ctx, spec.required, Some(user.id)).await?;
+    let inv = Invoker::from_poise(ctx)?;
+    authorize(&inv, spec.required, Some(user.id)).await?;
     if spec.needs_member {
-        require_member(ctx, user.id).await?;
+        require_member(&inv, user.id).await?;
     }
     let guild_id = ctx.guild_id().ok_or_else(|| UserError("This command only works in a server.".into()))?;
     let case = execute(

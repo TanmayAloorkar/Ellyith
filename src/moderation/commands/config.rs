@@ -1,3 +1,5 @@
+use crate::invoker::Invoker;
+use crate::moderation::perms::require_manage_server;
 use crate::logging::{self, LogCategory};
 use crate::moderation::cases::CaseKind;
 use crate::duration::{format_duration, parse_duration};
@@ -10,15 +12,8 @@ use poise::serenity_prelude::{CreateAllowedMentions, GuildChannel, Role};
 
 /// Manage Server only (owner and Administrators pass too).
 async fn manage_guild(ctx: Context<'_>) -> Result<bool, Error> {
-    let denied = || UserError("You need Manage Server to use /config.".into());
-    let Some(guild_id) = ctx.guild_id() else { return Err(denied().into()) };
-    let Some(m) = ctx.author_member().await else { return Err(denied().into()) };
-    let ok = ctx
-        .serenity_context()
-        .cache
-        .guild(guild_id)
-        .is_some_and(|g| g.owner_id == m.user.id || g.member_permissions(&m).manage_guild());
-    if ok { Ok(true) } else { Err(denied().into()) }
+    require_manage_server(&Invoker::from_poise(ctx)?).await?;
+    Ok(true)
 }
 
 /// Configure the bot.

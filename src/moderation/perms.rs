@@ -1,5 +1,6 @@
 use crate::settings::{self, GuildSettings};
-use crate::{Context, Error, UserError};
+use crate::invoker::Invoker;
+use crate::{Error, UserError};
 use poise::serenity_prelude::{self as serenity, GuildId, Member, Permissions, UserId};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,13 +98,8 @@ pub async fn member_facts(
     })
 }
 
-fn not_in_guild() -> UserError {
-    UserError("This command only works in a server.".into())
-}
-
-pub async fn require_member(ctx: Context<'_>, user: UserId) -> Result<Member, Error> {
-    let guild_id = ctx.guild_id().ok_or_else(not_in_guild)?;
-    match guild_id.member(ctx, user).await {
+pub async fn require_member(inv: &Invoker<'_>, user: UserId) -> Result<Member, Error> {
+    match inv.guild_id.member(inv.ctx, user).await {
         Ok(m) => Ok(m),
         Err(e) if is_absent(&e) => Err(UserError("That user is not in this server.".into()).into()),
         Err(e) => Err(e.into()),
@@ -130,24 +126,24 @@ fn is_unknown_ban_code(code: isize) -> bool {
 }
 
 pub async fn authorize(
-    ctx: Context<'_>,
+    inv: &Invoker<'_>,
     required: Permissions,
     target: Option<UserId>,
 ) -> Result<GuildSettings, Error> {
-    let guild_id = ctx.guild_id().ok_or_else(not_in_guild)?;
-    let s = settings::get_or_create(&ctx.data().db, guild_id.get() as i64).await?;
-    let sctx = ctx.serenity_context();
-    let invoker_m = require_member(ctx, ctx.author().id).await?;
+    let guild_id = inv.guild_id;
+    let s = settings::get_or_create(&inv.data.db, guild_id.get() as i64).await?;
+    let sctx = inv.ctx;
+    let invoker_m = require_member(inv, inv.user.id).await?;
     let invoker = member_facts(sctx, guild_id, &invoker_m).await?;
     if !can_moderate(&invoker, &s, required) {
         return Err(UserError(Denied::NotModerator.message().into()).into());
     }
     let bot_id = sctx.cache.current_user().id;
-    let bot_m = require_member(ctx, bot_id).await?;
+    let bot_m = require_member(inv, bot_id).await?;
     let bot = member_facts(sctx, guild_id, &bot_m).await?;
     // Target not in server: nothing to rank-check (e.g. banning an absent user).
     let target_facts = match target {
-        Some(id) => match guild_id.member(ctx, id).await {
+        Some(id) => match guild_id.member(sctx, id).await {
             Ok(m) => Some(member_facts(sctx, guild_id, &m).await?),
             Err(e) if is_absent(&e) => None,
             Err(e) => return Err(e.into()),
@@ -156,6 +152,16 @@ pub async fn authorize(
     };
     can_target(&invoker, target_facts.as_ref(), &bot, &s).map_err(|d| UserError(d.message().into()))?;
     Ok(s)
+}
+
+/// Owner, Administrator or Manage Server.
+pub async fn require_manage_server(inv: &Invoker<'_>) -> Result<(), Error> {
+    let denied = || UserError("You need Manage Server to use /config.".into());
+    let m = require_member(inv, inv.user.id).await.map_err(|_| denied())?;
+    let ok = inv.ctx.cache.guild(inv.guild_id).is_some_and(|g| {
+        g.owner_id == m.user.id || g.member_permissions(&m).manage_guild()
+    });
+    if ok { Ok(()) } else { Err(denied().into()) }
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 use crate::moderation::actions::{discord_error, record_case};
 use crate::moderation::cases::{Actor, CaseKind, NewCase};
 use crate::moderation::commands::config::ephemeral;
+use crate::invoker::Invoker;
 use crate::moderation::perms::{authorize, member_facts, require_member};
 use crate::{Context, Error, UserError};
 use poise::serenity_prelude::{ChannelId, EditMember, GuildChannel, Permissions, User};
@@ -59,8 +60,9 @@ fn case_reason(dest: Option<ChannelId>, reason: Option<String>) -> Option<String
 async fn run(ctx: Context<'_>, user: User, kind: CaseKind, dest: Option<ChannelId>, reason: Option<String>) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
     let need = required_permission(kind);
-    authorize(ctx, need, Some(user.id)).await?;
-    require_member(ctx, user.id).await?;
+    let inv = Invoker::from_poise(ctx)?;
+    authorize(&inv, need, Some(user.id)).await?;
+    require_member(&inv, user.id).await?;
     let guild_id = ctx.guild_id().ok_or_else(|| UserError("This command only works in a server.".into()))?;
     let current = ctx
         .cache()
@@ -71,7 +73,7 @@ async fn run(ctx: Context<'_>, user: User, kind: CaseKind, dest: Option<ChannelI
         return Err(UserError("That user is already in that channel.".into()).into());
     }
     let bot_id = ctx.cache().current_user().id;
-    let bot_m = require_member(ctx, bot_id).await?;
+    let bot_m = require_member(&inv, bot_id).await?;
     let bot = member_facts(ctx.serenity_context(), guild_id, &bot_m).await?;
     if !bot.permissions.contains(need) {
         return Err(UserError("I don't have permission to do that.".into()).into());
