@@ -126,6 +126,23 @@ New slash command and the panel button share one implementation.
 - Logged to the **mod_actions** log channel as an embed (moderator, channel, amount asked, deleted, skipped, member filter, reason). It is **not** a case: it targets a channel, not a member. The existing message-log category will also record the bulk delete; that is fine.
 - No DM.
 
+## 7a. Reply style for every command (owner's standing rule)
+
+Every reply from a slash command or a panel action is an ephemeral embed in the panel's style, never plain text. Mockup: `.superpowers/brainstorm/1226-1795342774/content/styled-replies.html`.
+- **Done:** colour bar of the category (Members red `#da373c`, Names & voice / Channels blurple `#5865f2`, Records grey `#4e5058`, Config light grey `#949ba4`), title "<emoji> <Action> <user>", short label/value lines (case, reason, DM delivered/failed, per-user count), footer naming the log channel used (or nothing if logging is off).
+- **Refused / error:** grey bar, title "Can't do that", the existing plain reason as the body, footer "Nothing was changed." (plus "No DM was sent." where a DM would have been sent).
+- **Lists** (history, notes, ladder, settings): title with the subject and count, grouped short lines; removed cases struck through with who removed them.
+- One shared reply-builder module so slash commands and panel handlers produce identical embeds.
+
+## 7b. Case rules change (amends step 1a)
+
+Owner decision: **only punishments create cases.**
+- **Case:** warn, timeout, kick, ban, tempban, voice server-mute (including automatic ladder punishments).
+- **No case, mod-log entry only:** untimeout, unban (manual, scheduled tempban expiry, Discord-side), nickname set/reset (manual and the automatic bad-name reset), voice unmute, disconnect, move. These post a non-case embed to the mod_actions log channel (who, whom, what, reason).
+- **Numbering:** case numbers stay server-wide and unique (so `/case view 12` keeps working). Replies and history also show the member's running count, e.g. "username's 3rd case" — position among all of that member's cases, removed ones included (*my call*).
+- Existing rows of now-non-case kinds in the database are left untouched (*my call*; only the test server has any).
+- `/mywarnings` and `/history` therefore only ever list punishments going forward.
+
 ## 8. Restart safety and storage
 
 - New columns on `guild_settings` (or a small table): panel channel id, panel message id.
