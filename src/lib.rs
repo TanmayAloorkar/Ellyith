@@ -33,8 +33,15 @@ impl std::error::Error for UserError {}
 pub fn all_commands() -> Vec<poise::Command<Data, Error>> {
     {
         use moderation::commands::{cases, punish::*};
-        vec![ping(), moderation::commands::config::config(), warn(), timeout(), untimeout(), kick(), ban(), tempban(), unban(), cases::case(), cases::history(), cases::note(), cases::mywarnings(), moderation::commands::nick::nick(), moderation::commands::voice::voice(), moderation::commands::purge::purge(), safety::commands::quarantine(), safety::lockdown::lockdown()]
+        vec![ping(), moderation::commands::config::config(), warn(), timeout(), untimeout(), kick(), ban(), tempban(), unban(), cases::case(), cases::history(), cases::note(), cases::mywarnings(), moderation::commands::nick::nick(), moderation::commands::voice::voice(), moderation::commands::purge::purge(), safety::commands::quarantine(), safety::lockdown::lockdown(), healthcheck()]
     }
+}
+
+/// Check how well the server is set up for safety.
+#[poise::command(slash_command, guild_only, default_member_permissions = "MANAGE_GUILD")]
+async fn healthcheck(ctx: Context<'_>) -> Result<(), Error> {
+    ctx.defer_ephemeral().await?;
+    reply::send(ctx, safety::health::health_core(&invoker::Invoker::from_poise(ctx)?).await?).await
 }
 
 /// Check that the bot is alive.

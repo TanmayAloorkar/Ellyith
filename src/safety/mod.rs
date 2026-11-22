@@ -4,3 +4,4 @@ pub mod quarantine;
 pub mod commands;
 pub mod verify;
 pub mod lockdown;
+pub mod health;
