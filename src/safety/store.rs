@@ -103,6 +103,11 @@ pub async fn quarantine_set_review(db: &PgPool, guild_id: i64, user_id: i64, cha
     Ok(())
 }
 
+/// False when there is no row to update.
+pub async fn quarantine_set_answers(db: &PgPool, guild_id: i64, user_id: i64, answers: &[String]) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query("UPDATE quarantines SET answers=$3 WHERE guild_id=$1 AND user_id=$2").bind(guild_id).bind(user_id).bind(answers).execute(db).await?.rows_affected() == 1)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SavedOverwrite {
     pub target_id: i64,

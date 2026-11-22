@@ -10,6 +10,7 @@ use crate::panel::view;
 use crate::reply::{self, Tone};
 use crate::settings::{self, GuildSettings};
 use crate::safety::commands::quarantine_config as quarantine;
+use crate::safety::verify::{self, RoleOp};
 use crate::{Context, Error, UserError};
 use poise::serenity_prelude::{self as serenity, CreateAllowedMentions, CreateMessage, GuildChannel, MessageId, Role, RoleId};
 
@@ -23,7 +24,7 @@ async fn manage_guild(ctx: Context<'_>) -> Result<bool, Error> {
 #[poise::command(
     slash_command,
     guild_only,
-    subcommands("modroles", "protected", "logs", "dm", "ladder", "decay", "nickwords", "nickfilter", "panel", "quarantine"),
+    subcommands("modroles", "protected", "logs", "dm", "ladder", "decay", "nickwords", "nickfilter", "panel", "quarantine", "verification"),
     default_member_permissions = "MANAGE_GUILD",
     check = "manage_guild"
 )]
@@ -392,6 +393,96 @@ pub async fn panel(ctx: Context<'_>, #[channel_types("Text", "News")] channel: G
         }
     }
     reply::send(ctx, reply::done(Tone::Config, "⚙️ Panel posted", &[("Channel", format!("<#{}>", channel.id))], None)).await
+}
+
+#[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
+pub enum VerifyMethod {
+    #[name = "off"]
+    Off,
+    #[name = "button"]
+    Button,
+    #[name = "quiz"]
+    Quiz,
+}
+
+#[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
+pub enum VerifyReview {
+    #[name = "staff"]
+    Staff,
+    #[name = "auto"]
+    Auto,
+}
+
+/// Member verification settings.
+#[poise::command(
+    slash_command,
+    guild_only,
+    subcommands("ver_method", "ver_answers", "ver_channel", "ver_roles", "ver_questions", "ver_description", "ver_post")
+)]
+pub async fn verification(_: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Turn verification off, or require a button press or a quiz.
+#[poise::command(slash_command, guild_only, rename = "method")]
+async fn ver_method(ctx: Context<'_>, method: VerifyMethod) -> Result<(), Error> {
+    reply::send(ctx, verify::set_method_core(&Invoker::from_poise(ctx)?, poise::ChoiceParameter::name(&method)).await?).await
+}
+
+/// Who checks quiz answers.
+#[poise::command(slash_command, guild_only, rename = "answers")]
+async fn ver_answers(ctx: Context<'_>, review: VerifyReview) -> Result<(), Error> {
+    reply::send(ctx, verify::set_review_core(&Invoker::from_poise(ctx)?, poise::ChoiceParameter::name(&review)).await?).await
+}
+
+/// Where the verify message goes.
+#[poise::command(slash_command, guild_only, rename = "channel")]
+async fn ver_channel(ctx: Context<'_>, #[channel_types("Text")] channel: GuildChannel) -> Result<(), Error> {
+    ctx.defer_ephemeral().await?;
+    reply::send(ctx, verify::set_channel_core(&Invoker::from_poise(ctx)?, channel.id).await?).await
+}
+
+/// Roles given when a member verifies.
+#[poise::command(slash_command, guild_only, rename = "roles", subcommands("ver_roles_add", "ver_roles_remove", "ver_roles_clear"))]
+async fn ver_roles(_: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Give this role on verification.
+#[poise::command(slash_command, guild_only, rename = "add")]
+async fn ver_roles_add(ctx: Context<'_>, role: Role) -> Result<(), Error> {
+    reply::send(ctx, verify::set_roles_core(&Invoker::from_poise(ctx)?, RoleOp::Add(role.id)).await?).await
+}
+
+/// Stop giving this role.
+#[poise::command(slash_command, guild_only, rename = "remove")]
+async fn ver_roles_remove(ctx: Context<'_>, role: Role) -> Result<(), Error> {
+    reply::send(ctx, verify::set_roles_core(&Invoker::from_poise(ctx)?, RoleOp::Remove(role.id)).await?).await
+}
+
+/// Give no roles on verification.
+#[poise::command(slash_command, guild_only, rename = "clear")]
+async fn ver_roles_clear(ctx: Context<'_>) -> Result<(), Error> {
+    reply::send(ctx, verify::set_roles_core(&Invoker::from_poise(ctx)?, RoleOp::Clear).await?).await
+}
+
+/// Quiz questions, up to 5 separated by ; (add | expected answer to auto-grade).
+#[poise::command(slash_command, guild_only, rename = "questions")]
+async fn ver_questions(ctx: Context<'_>, questions: String) -> Result<(), Error> {
+    reply::send(ctx, verify::set_questions_core(&Invoker::from_poise(ctx)?, &questions).await?).await
+}
+
+/// Text shown on the verify message.
+#[poise::command(slash_command, guild_only, rename = "description")]
+async fn ver_description(ctx: Context<'_>, #[max_length = 1000] text: String) -> Result<(), Error> {
+    reply::send(ctx, verify::set_description_core(&Invoker::from_poise(ctx)?, text).await?).await
+}
+
+/// Post the verify message, replacing the previous one.
+#[poise::command(slash_command, guild_only, rename = "post")]
+async fn ver_post(ctx: Context<'_>) -> Result<(), Error> {
+    ctx.defer_ephemeral().await?;
+    reply::send(ctx, verify::post_core(&Invoker::from_poise(ctx)?).await?).await
 }
 
 #[cfg(test)]

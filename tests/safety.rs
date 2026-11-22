@@ -53,3 +53,12 @@ async fn lockdown_save_load_clear(pool: PgPool) {
     assert!(!lockdown_active(&pool, 1).await.unwrap());
     assert!(lockdown_load(&pool, 1).await.unwrap().is_empty());
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn quarantine_set_answers_keeps_row(pool: PgPool) {
+    assert!(!quarantine_set_answers(&pool, 1, 5, &["a".into()]).await.unwrap());
+    quarantine_insert(&pool, &qrow(1, 5)).await.unwrap();
+    assert!(quarantine_set_answers(&pool, 1, 5, &["blue".into(), "x".into()]).await.unwrap());
+    let r = quarantine_get(&pool, 1, 5).await.unwrap().unwrap();
+    assert_eq!((r.answers, r.saved_roles), (Some(vec!["blue".into(), "x".into()]), vec![10, 11]));
+}

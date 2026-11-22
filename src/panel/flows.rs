@@ -12,6 +12,7 @@ use crate::moderation::purge::{self, parse_amount};
 use crate::reply::{refused, Tone};
 use crate::safety::quarantine::{deny, handled_card, release_core};
 use crate::safety::store;
+use crate::safety::verify;
 use crate::{Data, Error, UserError};
 use poise::serenity_prelude::{
     self as serenity, ActionRowComponent, ChannelId, ChannelType, ComponentInteraction, ComponentInteractionDataKind, CreateActionRow, CreateAllowedMentions,
@@ -131,7 +132,7 @@ async fn exec(inv: &Invoker<'_>, a: Action, user: Option<UserId>, chan: Option<C
 }
 
 /// Same wording as the slash-command error handler: refusals are shown, anything else is logged.
-pub(super) fn outcome_of(what: impl std::fmt::Debug, dm: bool, res: Result<CreateEmbed, Error>) -> CreateEmbed {
+pub(crate) fn outcome_of(what: impl std::fmt::Debug, dm: bool, res: Result<CreateEmbed, Error>) -> CreateEmbed {
     match res {
         Ok(e) => e,
         Err(e) => match e.downcast_ref::<UserError>() {
@@ -150,7 +151,7 @@ fn outcome(a: Action, res: Result<CreateEmbed, Error>) -> CreateEmbed {
 
 // ---- response builders ----
 
-pub(super) fn msg(embed: CreateEmbed, rows: Vec<CreateActionRow>) -> CreateInteractionResponseMessage {
+pub(crate) fn msg(embed: CreateEmbed, rows: Vec<CreateActionRow>) -> CreateInteractionResponseMessage {
     CreateInteractionResponseMessage::new().embed(embed).components(rows).allowed_mentions(CreateAllowedMentions::new())
 }
 
@@ -194,13 +195,18 @@ fn modal_for(a: Action, user: Option<UserId>, chan: Option<ChannelId>) -> Option
     Some(CreateModal::new(PanelId::Modal(a, user, chan).encode(), title).components(rows))
 }
 
+/// Ids anyone in any server may press; every other `mp:` id is the staff panel.
+pub fn is_public_id(id: &str) -> bool {
+    matches!(id, "mp:v" | "mp:vq")
+}
+
 // ---- entry point ----
 
 /// Handle a panel button, select or pop-up. Ignores everything else; never returns an error.
 pub async fn handle(ctx: &serenity::Context, data: &Data, interaction: &serenity::Interaction) {
     let res = match interaction {
-        serenity::Interaction::Component(ci) if ci.data.custom_id.starts_with("mp:") && ci.guild_id == Some(data.home_guild) => on_component(ctx, data, ci).await,
-        serenity::Interaction::Modal(mi) if mi.data.custom_id.starts_with("mp:") && mi.guild_id == Some(data.home_guild) => on_modal(ctx, data, mi).await,
+        serenity::Interaction::Component(ci) if ci.data.custom_id.starts_with("mp:") && (ci.guild_id == Some(data.home_guild) || is_public_id(&ci.data.custom_id)) => on_component(ctx, data, ci).await,
+        serenity::Interaction::Modal(mi) if mi.data.custom_id.starts_with("mp:") && (mi.guild_id == Some(data.home_guild) || is_public_id(&mi.data.custom_id)) => on_modal(ctx, data, mi).await,
         _ => return,
     };
     if let Err(e) = res {
@@ -222,6 +228,7 @@ async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIntera
         PanelId::Category(c) => show(view::category(c)),
         PanelId::Config(c) => return super::config::on_component(ctx, data, ci, c).await,
         PanelId::Review(approve, user) => return on_review(ctx, data, ci, approve, user).await,
+        PanelId::Verify => return verify::on_press(ctx, data, ci).await,
         PanelId::Action(Action::Purge) => prompt(
             Action::Purge,
             "which channel?",
@@ -256,7 +263,7 @@ async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIntera
             let Some(&chan) = values.first() else { return stale(ctx, ci).await };
             return open_modal(ctx, ci, a, user, Some(chan)).await;
         }
-        PanelId::Modal(..) => return stale(ctx, ci).await,
+        PanelId::Modal(..) | PanelId::VerifyQuiz => return stale(ctx, ci).await,
     };
     ci.create_response(&ctx.http, reply).await?;
     Ok(())
@@ -322,7 +329,7 @@ pub(super) fn show_views(in_ephemeral: bool, (e, rows): (CreateEmbed, Vec<Create
 }
 
 /// Text input values of a submitted pop-up, in order.
-pub(super) fn modal_values(mi: &ModalInteraction) -> Vec<String> {
+pub(crate) fn modal_values(mi: &ModalInteraction) -> Vec<String> {
     mi.data
         .components
         .iter()
@@ -338,6 +345,9 @@ async fn on_modal(ctx: &serenity::Context, data: &Data, mi: &ModalInteraction) -
     let decoded = PanelId::decode(&mi.data.custom_id);
     if let Some(PanelId::Config(c)) = decoded {
         return super::config::on_modal(ctx, data, mi, c).await;
+    }
+    if decoded == Some(PanelId::VerifyQuiz) {
+        return verify::on_submit(ctx, data, mi).await;
     }
     let Some(PanelId::Modal(a, user, chan)) = decoded else {
         mi.create_response(&ctx.http, CreateInteractionResponse::Message(msg(refused(STALE, false), vec![]).ephemeral(true))).await?;
@@ -360,6 +370,14 @@ mod tests {
         Action::Disconnect, Action::VoiceMute, Action::VoiceUnmute, Action::Move, Action::Purge, Action::History, Action::CaseView, Action::CaseReason,
         Action::CaseRemove, Action::NoteAdd, Action::NoteList, Action::NoteView, Action::NoteDelete,
     ];
+
+    #[test]
+    fn public_ids() {
+        assert!(is_public_id("mp:v") && is_public_id("mp:vq"));
+        for id in ["mp:home", "mp:h", "mp:rv:a:1", "mp:vx", "v"] {
+            assert!(!is_public_id(id), "{id}");
+        }
+    }
 
     #[test]
     fn parsers() {
