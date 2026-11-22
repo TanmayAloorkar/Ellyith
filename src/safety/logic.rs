@@ -72,13 +72,13 @@ pub fn lockdown_overwrites(
         }
     };
     let apply = |o: &SavedOverwrite, add_allow: Permissions, add_deny: Permissions| SavedOverwrite {
-        allow: ((Permissions::from_bits_truncate(o.allow as u64) | add_allow) - add_deny).bits() as i64,
-        deny: ((Permissions::from_bits_truncate(o.deny as u64) | add_deny) - add_allow).bits() as i64,
+        allow: ((Permissions::from_bits_retain(o.allow as u64) | add_allow) - add_deny).bits() as i64,
+        deny: ((Permissions::from_bits_retain(o.deny as u64) | add_deny) - add_allow).bits() as i64,
         ..o.clone()
     };
     let mut out: Vec<SavedOverwrite> = existing
         .iter()
-        .map(|o| match change(o.target_id as u64, o.is_member, Permissions::from_bits_truncate(o.allow as u64)) {
+        .map(|o| match change(o.target_id as u64, o.is_member, Permissions::from_bits_retain(o.allow as u64)) {
             Some((a, d)) => apply(o, a, d),
             None => o.clone(),
         })
@@ -246,6 +246,16 @@ mod tests {
         let m = find(&out, 4, false);
         assert!(p(m.allow).contains(Permissions::SEND_MESSAGES));
         assert!(!p(m.deny).contains(Permissions::SEND_MESSAGES));
+    }
+
+    #[test]
+    fn lockdown_keeps_unknown_bits() {
+        let (hi_a, hi_d) = (1i64 << 51, 1i64 << 52);
+        let e = vec![SavedOverwrite { target_id: 1, is_member: false, allow: hi_a, deny: hi_d }];
+        let out = lockdown_overwrites(&e, 1, &[4], 99, false);
+        let ev = find(&out, 1, false);
+        assert_eq!(ev.allow & hi_a, hi_a);
+        assert_eq!(ev.deny & hi_d, hi_d);
     }
 
     #[test]

@@ -9,12 +9,17 @@ use crate::safety::logic::{lockdown_overwrites, restore_plan};
 use crate::safety::store::{self, SavedOverwrite};
 use crate::{settings, Context, Data, Error, UserError};
 use poise::serenity_prelude::{
-    self as serenity, ChannelId, ChannelType, CreateEmbed, CreateMessage, GuildChannel, GuildId, PermissionOverwrite, PermissionOverwriteType,
-    Permissions, RoleId, UserId,
+    self as serenity, ChannelId, CreateEmbed, CreateMessage, GuildChannel, GuildId, LightMethod, PermissionOverwriteType, Permissions, Request,
+    RoleId, Route, TargetId, UserId,
 };
 use std::sync::Mutex;
 
 const MAX_CHANNELS: usize = 25;
+// Discord channel types (raw JSON `type`).
+const VOICE: u64 = 2;
+const STAGE: u64 = 13;
+const FORUM: u64 = 15;
+const MEDIA: u64 = 16;
 
 pub struct LockdownResult {
     pub done: Vec<ChannelId>,
@@ -74,15 +79,6 @@ impl Drop for Busy {
     }
 }
 
-fn to_saved(o: &PermissionOverwrite) -> Option<SavedOverwrite> {
-    let (target_id, is_member) = match o.kind {
-        PermissionOverwriteType::Role(r) => (r.get(), false),
-        PermissionOverwriteType::Member(u) => (u.get(), true),
-        _ => return None,
-    };
-    Some(SavedOverwrite { target_id: target_id as i64, is_member, allow: o.allow.bits() as i64, deny: o.deny.bits() as i64 })
-}
-
 fn kind(o: &SavedOverwrite) -> PermissionOverwriteType {
     if o.is_member {
         PermissionOverwriteType::Member(UserId::new(o.target_id as u64))
@@ -91,15 +87,26 @@ fn kind(o: &SavedOverwrite) -> PermissionOverwriteType {
     }
 }
 
-fn to_overwrite(o: &SavedOverwrite) -> PermissionOverwrite {
-    PermissionOverwrite { allow: Permissions::from_bits_truncate(o.allow as u64), deny: Permissions::from_bits_truncate(o.deny as u64), kind: kind(o) }
+/// Overwrites and channel type from raw channel JSON. serenity's typed `Permissions` drops bits it
+/// doesn't know (newer than 1<<50), which would make the restore inexact.
+pub fn parse_channel(v: &serde_json::Value) -> (Vec<SavedOverwrite>, u64) {
+    let ows = v["permission_overwrites"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|o| {
+            let num = |k: &str| -> Option<i64> { o[k].as_str()?.parse::<u64>().ok().map(|n| n as i64) };
+            Some(SavedOverwrite { target_id: num("id")?, is_member: o["type"].as_u64()? == 1, allow: num("allow")?, deny: num("deny")? })
+        })
+        .collect();
+    (ows, v["type"].as_u64().unwrap_or(0))
 }
 
-/// Current overwrites and whether it is a voice/stage channel; Ok(None) when the channel is gone.
+/// Current overwrites and channel type; Ok(None) when the channel is gone.
 /// Read from Discord, not the cache: `end` right after `start` must see the overwrites `start` added.
-async fn fetch(ctx: &serenity::Context, ch: ChannelId) -> Result<Option<(Vec<SavedOverwrite>, bool)>, Error> {
-    match ctx.http.get_channel(ch).await {
-        Ok(c) => Ok(c.guild().map(|c| (c.permission_overwrites.iter().filter_map(to_saved).collect(), matches!(c.kind, ChannelType::Voice | ChannelType::Stage)))),
+async fn fetch(ctx: &serenity::Context, ch: ChannelId) -> Result<Option<(Vec<SavedOverwrite>, u64)>, Error> {
+    match ctx.http.fire::<serde_json::Value>(Request::new(Route::Channel { channel_id: ch }, LightMethod::Get)).await {
+        Ok(v) => Ok(Some(parse_channel(&v))),
         // Unknown Channel (10003): deleted.
         Err(serenity::Error::Http(serenity::HttpError::UnsuccessfulRequest(r))) if r.error.code == 10003 => Ok(None),
         Err(e) => Err(e.into()),
@@ -117,7 +124,8 @@ async fn apply(
 ) -> (usize, Option<serenity::Error>) {
     let mut n = 0;
     for o in set.iter().filter(|o| !current.contains(o)) {
-        if let Err(e) = ch.create_permission(ctx, to_overwrite(o)).await {
+        let body = serde_json::json!({"allow": (o.allow as u64).to_string(), "deny": (o.deny as u64).to_string(), "type": u8::from(o.is_member)});
+        if let Err(e) = ctx.http.create_permission(ch, TargetId::new(o.target_id as u64), &body, None).await {
             return (n, Some(e));
         }
         n += 1;
@@ -163,7 +171,7 @@ pub async fn start(
     let mut r = LockdownResult { done: vec![], skipped: vec![] };
     for &ch in &s.lockdown_channels {
         let id = ChannelId::new(ch as u64);
-        let (current, voice) = match fetch(ctx, id).await {
+        let (current, kind) = match fetch(ctx, id).await {
             Ok(Some(c)) => c,
             Ok(None) => {
                 r.skipped.push(id);
@@ -176,8 +184,8 @@ pub async fn start(
             }
         };
         // Saved before any edit, so `end` can always put the channel back.
-        store::lockdown_save_channel(&data.db, gid, ch, &current, message.is_some()).await?;
-        let target = lockdown_overwrites(&current, guild_id.get(), &mods, bot, voice);
+        store::lockdown_save_channel(&data.db, gid, ch, &current, false).await?;
+        let target = lockdown_overwrites(&current, guild_id.get(), &mods, bot, matches!(kind, VOICE | STAGE));
         if let (applied, Some(e)) = apply(ctx, id, &current, &target, &[]).await {
             tracing::warn!("locking {id} failed: {e}");
             // Nothing changed: forget it. Partly changed: keep it so `end` restores it.
@@ -187,12 +195,22 @@ pub async fn start(
             r.skipped.push(id);
             continue;
         }
-        if let Some(m) = &message {
-            if let Err(e) = id.send_message(ctx, notice("🔒 Channel locked", Some(m))).await {
-                tracing::warn!("posting the lock message in {id} failed: {e}");
+        // Forum and media channels can't take a plain message.
+        if let Some(m) = message.as_ref().filter(|_| !matches!(kind, FORUM | MEDIA)) {
+            match id.send_message(ctx, notice("🔒 Channel locked", Some(m))).await {
+                Ok(_) => store::lockdown_save_channel(&data.db, gid, ch, &current, true).await?,
+                Err(e) => tracing::warn!("posting the lock message in {id} failed: {e}"),
             }
         }
         r.done.push(id);
+    }
+    if r.done.is_empty() {
+        let mut msg = format!("Couldn't lock any channel. {}", channel_summary(&r.skipped));
+        // A channel that failed part-way keeps its saved state; `end` puts it back.
+        if store::lockdown_active(&data.db, gid).await? {
+            msg.push_str(" Some were changed part-way: run /lockdown end to undo them.");
+        }
+        return Err(UserError(msg).into());
     }
     let mut log = CreateEmbed::new()
         .title("Lockdown · no case")
@@ -401,6 +419,24 @@ mod tests {
         assert_eq!(precheck(true, &[1]).unwrap_err().0, "A lockdown is already active.");
         assert_eq!(precheck(false, &[]).unwrap_err().0, "No lockdown channels are set. Add them in Config → Lockdown.");
         assert!(precheck(false, &[1]).is_ok());
+    }
+
+    #[test]
+    fn parses_raw_overwrites() {
+        let hi = (1u64 << 51) | 2048;
+        let v = serde_json::json!({"type": 2, "permission_overwrites": [
+            {"id": "7", "type": 0, "allow": hi.to_string(), "deny": (1u64 << 52).to_string()},
+            {"id": "9", "type": 1, "allow": "0", "deny": "2048"},
+        ]});
+        let (ows, kind) = parse_channel(&v);
+        assert_eq!(kind, 2);
+        assert_eq!(
+            ows,
+            vec![
+                SavedOverwrite { target_id: 7, is_member: false, allow: hi as i64, deny: 1 << 52 },
+                SavedOverwrite { target_id: 9, is_member: true, allow: 0, deny: 2048 },
+            ]
+        );
     }
 
     #[test]
