@@ -94,6 +94,7 @@ async fn main() {
                 .await?;
                 let data = Data {
                     db: pool,
+                    home_guild: serenity::GuildId::new(guild_id),
                     msg_cache: std::sync::Arc::new(aio_bot::logging::cache::MessageCache::new(10_000, std::time::Duration::from_secs(24 * 3600))),
                 };
                 tokio::spawn(aio_bot::scheduler::run(ctx.clone(), data.clone()));

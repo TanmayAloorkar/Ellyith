@@ -14,4 +14,8 @@ impl<'a> Invoker<'a> {
         let guild_id = ctx.guild_id().ok_or_else(|| UserError("This command only works in a server.".into()))?;
         Ok(Self { ctx: ctx.serenity_context(), data: ctx.data(), guild_id, user: ctx.author().clone() })
     }
+
+    pub fn from_interaction(ctx: &'a serenity::Context, data: &'a Data, guild_id: GuildId, user: &User) -> Self {
+        Self { ctx, data, guild_id, user: user.clone() }
+    }
 }

@@ -54,6 +54,7 @@ pub async fn event_handler(
             let ids: Vec<u64> = multiple_deleted_messages_ids.iter().map(|i| i.get()).collect();
             messages::on_bulk_delete(&ctx.http, data, channel_id.get(), &ids, *guild_id).await
         }
+        serenity::FullEvent::InteractionCreate { interaction } => crate::panel::handle(ctx, data, interaction).await,
         _ => {}
     }
     Ok(())

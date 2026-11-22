@@ -93,6 +93,20 @@ fn back() -> CreateButton {
     button(PanelId::Home, "← Back", S)
 }
 
+pub fn back_row() -> CreateActionRow {
+    CreateActionRow::Buttons(vec![back()])
+}
+
+/// Emoji and label of an action's panel button.
+pub fn action_label(a: Action) -> &'static str {
+    [MEMBERS, NAMES_VOICE, CHANNELS, RECORDS]
+        .into_iter()
+        .flatten()
+        .flat_map(|(_, items)| items.iter())
+        .find(|(x, ..)| *x == a)
+        .map_or("Action", |(_, l, ..)| l)
+}
+
 fn line(label: &str, desc: &str) -> String {
     format!("**{label}** {desc}")
 }

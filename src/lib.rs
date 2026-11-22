@@ -12,6 +12,7 @@ pub mod panel;
 #[derive(Clone)]
 pub struct Data {
     pub db: sqlx::PgPool,
+    pub home_guild: poise::serenity_prelude::GuildId,
     pub msg_cache: std::sync::Arc<logging::cache::MessageCache>,
 }
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
