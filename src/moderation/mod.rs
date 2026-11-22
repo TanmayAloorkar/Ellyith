@@ -7,3 +7,4 @@ pub mod actions;
 pub mod jobs;
 pub mod notes;
 pub mod nickname;
+pub mod purge;

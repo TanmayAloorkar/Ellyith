@@ -3,6 +3,7 @@ pub mod punish;
 pub mod cases;
 pub mod nick;
 pub mod voice;
+pub mod purge;
 
 use crate::duration::format_duration;
 use crate::invoker::Invoker;
