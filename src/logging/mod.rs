@@ -5,7 +5,7 @@ pub mod messages;
 use crate::duration::format_duration;
 use crate::moderation::cases::{Actor, Case, CaseKind};
 use crate::text::truncate;
-use poise::serenity_prelude::{ChannelId, CreateEmbed, CreateEmbedFooter, CreateMessage, GuildId, Http};
+use poise::serenity_prelude::{ChannelId, CreateEmbed, CreateEmbedFooter, CreateMessage, GuildId, Http, Message};
 use sqlx::PgPool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, poise::ChoiceParameter)]
@@ -98,13 +98,25 @@ pub async fn channel_for(db: &PgPool, guild_id: i64, cat: LogCategory) -> Result
 
 /// Post `embed` to the category's channel. No-op when the category is off; never errors.
 pub async fn send_log(http: &Http, db: &PgPool, guild_id: GuildId, cat: LogCategory, embed: CreateEmbed) {
+    send_log_message(http, db, guild_id, cat, CreateMessage::new().embed(embed)).await;
+}
+
+/// Like `send_log`, for a full message; returns the posted message.
+pub async fn send_log_message(http: &Http, db: &PgPool, guild_id: GuildId, cat: LogCategory, msg: CreateMessage) -> Option<Message> {
     let ch = match channel_for(db, guild_id.get() as i64, cat).await {
         Ok(Some(ch)) => ch,
-        Ok(None) => return,
-        Err(e) => return tracing::warn!("log channel lookup failed: {e}"),
+        Ok(None) => return None,
+        Err(e) => {
+            tracing::warn!("log channel lookup failed: {e}");
+            return None;
+        }
     };
-    if let Err(e) = ChannelId::new(ch as u64).send_message(http, CreateMessage::new().embed(embed)).await {
-        tracing::warn!("sending {} log to channel {ch} failed: {e}", cat.as_str());
+    match ChannelId::new(ch as u64).send_message(http, msg).await {
+        Ok(m) => Some(m),
+        Err(e) => {
+            tracing::warn!("sending {} log to channel {ch} failed: {e}", cat.as_str());
+            None
+        }
     }
 }
 
