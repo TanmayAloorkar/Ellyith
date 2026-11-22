@@ -116,13 +116,28 @@ pub async fn run(inv: &Invoker<'_>, channel: ChannelId, amount: PurgeAmount, mem
     }
     let p = plan(&scanned, &amount, member_id, now);
     let ids: Vec<MessageId> = p.delete.iter().map(|i| MessageId::new(*i)).collect();
+    let mut deleted = 0;
+    let mut failure: Option<Error> = None;
     for chunk in ids.chunks(100) {
-        match chunk {
-            [one] => channel.delete_message(inv.ctx, *one).await.map_err(discord_error)?,
-            _ => channel.delete_messages(inv.ctx, chunk).await.map_err(discord_error)?,
+        let res = match chunk {
+            [one] => channel.delete_message(inv.ctx, *one).await,
+            _ => channel.delete_messages(inv.ctx, chunk).await,
+        };
+        match res {
+            Ok(()) => deleted += chunk.len(),
+            // Unknown Message (10008): already gone, nothing to do.
+            Err(e) if matches!(&e, poise::serenity_prelude::Error::Http(poise::serenity_prelude::HttpError::UnsuccessfulRequest(r)) if r.error.code == 10008) => {}
+            Err(e) => {
+                failure = Some(discord_error(e));
+                break;
+            }
         }
     }
-    let deleted = ids.len();
+    if deleted == 0 {
+        if let Some(e) = failure {
+            return Err(e);
+        }
+    }
     let mut skipped = Vec::new();
     if p.too_old > 0 {
         skipped.push(format!("{} older than 14 days", p.too_old));
@@ -138,13 +153,27 @@ pub async fn run(inv: &Invoker<'_>, channel: ChannelId, amount: PurgeAmount, mem
         .field("Asked", describe(&amount), true)
         .field("Deleted", deleted.to_string(), true)
         .field("Skipped", if skipped.is_empty() { "none".into() } else { skipped.clone() }, true);
+    if failure.is_some() {
+        log = log.field("Note", "Stopped early after a Discord error.", false);
+    }
     if let Some(u) = member {
         log = log.field("Member", format!("<@{u}>"), true);
     }
     let reason_text = reason.as_deref().filter(|r| !r.is_empty()).unwrap_or("No reason given");
     log = log.field("Reason", reason_text.chars().take(1024).collect::<String>(), false);
-    send_log(&inv.ctx.http, &inv.data.db, inv.guild_id, LogCategory::ModActions, log).await;
     let name = inv.ctx.cache.guild(inv.guild_id).and_then(|g| g.channels.get(&channel).map(|c| c.name.clone())).unwrap_or_else(|| channel.to_string());
+    if deleted == 0 {
+        let lines: Vec<(&str, String)> = if skipped.is_empty() { vec![] } else { vec![("Skipped", skipped)] };
+        return Ok(done(Tone::Channels, &format!("🧹 Nothing to purge in #{name}"), &lines, None));
+    }
+    send_log(&inv.ctx.http, &inv.data.db, inv.guild_id, LogCategory::ModActions, log).await;
+    if let Some(e) = failure {
+        let msg = match e.downcast_ref::<UserError>() {
+            Some(u) => u.0.clone(),
+            None => "Discord rejected that action.".into(),
+        };
+        return Err(UserError(format!("Stopped after deleting {deleted} message(s): {msg}")).into());
+    }
     let mut lines = vec![("Deleted", deleted.to_string())];
     if !skipped.is_empty() {
         lines.push(("Skipped", skipped));
