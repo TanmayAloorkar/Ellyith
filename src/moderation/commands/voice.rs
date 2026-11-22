@@ -1,4 +1,4 @@
-use crate::moderation::actions::{discord_error, record_case};
+use crate::moderation::actions::{discord_error, record_or_log};
 use crate::moderation::cases::{Actor, CaseKind, NewCase};
 use crate::moderation::commands::config::ephemeral;
 use crate::invoker::Invoker;
@@ -86,7 +86,7 @@ async fn run(ctx: Context<'_>, user: User, kind: CaseKind, dest: Option<ChannelI
         _ => EditMember::new().voice_channel(dest.expect("move has a destination")),
     };
     guild_id.edit_member(ctx, user.id, edit.audit_log_reason(&audit)).await.map_err(discord_error)?;
-    let case = record_case(
+    let case = record_or_log(
         ctx.serenity_context(),
         ctx.data(),
         None,
@@ -102,7 +102,10 @@ async fn run(ctx: Context<'_>, user: User, kind: CaseKind, dest: Option<ChannelI
         },
     )
     .await?;
-    ephemeral(ctx, format!("Case #{}: {} for <@{}>.", case.case_number, case.kind.label(), user.id)).await
+    match case {
+        Some(c) => ephemeral(ctx, format!("Case #{}: {} for <@{}>.", c.case_number, c.kind.label(), user.id)).await,
+        None => ephemeral(ctx, format!("{} applied to <@{}>. Logged, no case.", kind.label(), user.id)).await,
+    }
 }
 
 #[cfg(test)]

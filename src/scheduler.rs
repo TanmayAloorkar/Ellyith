@@ -1,4 +1,4 @@
-use crate::moderation::actions::record_case;
+use crate::moderation::actions::record_or_log;
 use crate::moderation::cases::{Actor, CaseKind, NewCase};
 use crate::moderation::jobs::{self, Job, JobKind};
 use crate::moderation::perms::is_unknown_ban;
@@ -40,7 +40,7 @@ async fn run_job(ctx: &serenity::Context, data: &Data, job: Job) {
                 expires_at: None,
                 dm_failed: false,
             };
-            if let Err(e) = record_case(ctx, data, None, case).await {
+            if let Err(e) = record_or_log(ctx, data, None, case).await {
                 tracing::warn!("scheduler: unban case for job {} failed: {e}", job.id);
                 return;
             }

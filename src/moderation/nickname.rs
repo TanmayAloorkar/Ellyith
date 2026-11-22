@@ -1,4 +1,4 @@
-use crate::moderation::actions::record_case;
+use crate::moderation::actions::record_or_log;
 use crate::moderation::cases::{Actor, CaseKind, NewCase};
 use crate::moderation::perms::{is_exempt_from_auto, member_facts};
 use crate::settings;
@@ -77,7 +77,7 @@ pub async fn enforce(ctx: &serenity::Context, data: &Data, member: &Member) -> R
             EditMember::new().nickname(&s.nick_fallback).audit_log_reason("Nickname filter"),
         )
         .await?;
-    record_case(
+    record_or_log(
         ctx,
         data,
         None,

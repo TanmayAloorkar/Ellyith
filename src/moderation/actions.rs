@@ -1,5 +1,5 @@
 use crate::duration::{format_duration, MAX_TIMEOUT_SECS};
-use crate::logging::{case_embed, send_log, CaseEvent, LogCategory};
+use crate::logging::{action_embed, case_embed, send_log, CaseEvent, LogCategory};
 use crate::moderation::jobs::{self, JobKind};
 use crate::moderation::cases::{self, Actor, Case, CaseKind, NewCase};
 use crate::moderation::ladder::{self, LadderAction, LadderRule};
@@ -124,7 +124,7 @@ async fn send_dm(ctx: &serenity::Context, data: &Data, req: &ActionRequest, numb
 }
 
 /// Callers have already run `authorize`. Creates no case if the Discord action fails.
-pub async fn execute(ctx: &serenity::Context, data: &Data, req: ActionRequest) -> Result<Case, Error> {
+pub async fn execute(ctx: &serenity::Context, data: &Data, req: ActionRequest) -> Result<Option<Case>, Error> {
     // Validate before the DM so an unrepresentable duration never notifies the target.
     let unban_at = match req.kind {
         CaseKind::Tempban => Some(
@@ -183,7 +183,7 @@ pub async fn execute(ctx: &serenity::Context, data: &Data, req: ActionRequest) -
         jobs::schedule(&data.db, gid, JobKind::Unban, t.get() as i64, at).await?;
     }
 
-    let case = record_case(
+    let case = record_or_log(
         ctx,
         data,
         number,
@@ -200,7 +200,7 @@ pub async fn execute(ctx: &serenity::Context, data: &Data, req: ActionRequest) -
     )
     .await?;
 
-    if req.kind == CaseKind::Warn {
+    if let (CaseKind::Warn, Some(case)) = (req.kind, &case) {
         if let Err(e) = apply_ladder(ctx, data, g, t).await {
             tracing::warn!("auto punishment failed: {e}");
             let embed = CreateEmbed::new()
@@ -210,6 +210,16 @@ pub async fn execute(ctx: &serenity::Context, data: &Data, req: ActionRequest) -
         }
     }
     Ok(case)
+}
+
+/// Punishments become cases; everything else is a log entry with no case.
+pub async fn record_or_log(ctx: &serenity::Context, data: &Data, number: Option<i32>, c: NewCase) -> Result<Option<Case>, Error> {
+    if c.kind.is_punishment() {
+        return Ok(Some(record_case(ctx, data, number, c).await?));
+    }
+    let embed = action_embed(c.kind, c.target_id, &c.actor, c.reason.as_deref());
+    send_log(&ctx.http, &data.db, GuildId::new(c.guild_id as u64), LogCategory::ModActions, embed).await;
+    Ok(None)
 }
 
 pub async fn record_case(ctx: &serenity::Context, data: &Data, number: Option<i32>, c: NewCase) -> Result<Case, Error> {
@@ -239,7 +249,7 @@ pub async fn apply_ladder(ctx: &serenity::Context, data: &Data, guild_id: GuildI
     let rules = ladder::list_rules(&data.db, gid).await?;
     let Some(rule) = ladder::rule_for_count(&rules, warns) else { return Ok(None) };
     let req = ladder_request(guild_id, target, rule, warns);
-    Ok(Some(Box::pin(execute(ctx, data, req)).await?))
+    Box::pin(execute(ctx, data, req)).await
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use aio_bot::moderation::cases::{active_warn_count, create, history, soft_remove, Actor, CaseKind, NewCase};
+use aio_bot::moderation::cases::{active_warn_count, create, history, ordinal, soft_remove, Actor, CaseKind, NewCase};
 use sqlx::PgPool;
 
 fn new(guild: i64, target: i64, kind: CaseKind) -> NewCase {
@@ -65,4 +65,14 @@ async fn actor_and_fields_round_trip(pool: PgPool) {
     assert_eq!(got.kind, CaseKind::Ban);
     let edited = aio_bot::moderation::cases::set_reason(&pool, 1, 1, Some("x".into())).await.unwrap().unwrap();
     assert_eq!(edited.reason.as_deref(), Some("x"));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn ordinal_counts_target_cases_including_removed(pool: PgPool) {
+    let a = create(&pool, &warn(1, 100)).await.unwrap();
+    create(&pool, &warn(1, 200)).await.unwrap();
+    let c = create(&pool, &warn(1, 100)).await.unwrap();
+    soft_remove(&pool, 1, a.case_number, 9).await.unwrap();
+    assert_eq!(ordinal(&pool, 1, 100, c.case_number).await.unwrap(), 2);
+    assert_eq!(ordinal(&pool, 1, 100, a.case_number).await.unwrap(), 1);
 }

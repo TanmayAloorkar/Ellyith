@@ -1,4 +1,4 @@
-use crate::moderation::actions::record_case;
+use crate::moderation::actions::record_or_log;
 use crate::moderation::cases::{Actor, CaseKind, NewCase};
 use crate::moderation::commands::config::ephemeral;
 use crate::moderation::nickname::check_name;
@@ -45,7 +45,7 @@ async fn apply(ctx: Context<'_>, user: User, nick: Option<String>) -> Result<(),
         Some(n) => (CaseKind::NickSet, Some(format!("Set to: {n}"))),
         None => (CaseKind::NickReset, None),
     };
-    let case = record_case(
+    let _ = record_or_log(
         ctx.serenity_context(),
         ctx.data(),
         None,
@@ -61,5 +61,5 @@ async fn apply(ctx: Context<'_>, user: User, nick: Option<String>) -> Result<(),
         },
     )
     .await?;
-    ephemeral(ctx, format!("Case #{}: {} for <@{}>.", case.case_number, case.kind.label(), user.id)).await
+    ephemeral(ctx, format!("{} applied to <@{}>. Logged, no case.", kind.label(), user.id)).await
 }

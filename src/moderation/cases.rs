@@ -36,6 +36,13 @@ case_kinds! {
     VoiceMove => "voice_move", "Voice move";
 }
 
+impl CaseKind {
+    /// Only punishments create cases; everything else is a log entry.
+    pub fn is_punishment(self) -> bool {
+        matches!(self, Self::Warn | Self::Timeout | Self::Kick | Self::Ban | Self::Tempban | Self::VoiceMute)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Actor {
     Moderator(i64),
@@ -193,6 +200,16 @@ pub async fn history(db: &PgPool, guild_id: i64, target_id: i64, include_removed
     rows.iter().map(from_row).collect()
 }
 
+/// Position of a case among the target's cases (removed included).
+pub async fn ordinal(db: &PgPool, guild_id: i64, target_id: i64, case_number: i32) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT count(*) FROM cases WHERE guild_id = $1 AND target_id = $2 AND case_number <= $3")
+        .bind(guild_id)
+        .bind(target_id)
+        .bind(case_number)
+        .fetch_one(db)
+        .await
+}
+
 pub async fn active_warn_count(db: &PgPool, guild_id: i64, target_id: i64, decay_days: Option<i32>) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT count(*) FROM cases WHERE guild_id = $1 AND target_id = $2 AND kind = 'warn' AND removed_at IS NULL \
@@ -203,4 +220,19 @@ pub async fn active_warn_count(db: &PgPool, guild_id: i64, target_id: i64, decay
     .bind(decay_days)
     .fetch_one(db)
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn punishment_kinds() {
+        for k in [CaseKind::Warn, CaseKind::Timeout, CaseKind::Kick, CaseKind::Ban, CaseKind::Tempban, CaseKind::VoiceMute] {
+            assert!(k.is_punishment());
+        }
+        for k in [CaseKind::Untimeout, CaseKind::Unban, CaseKind::NickSet, CaseKind::NickReset, CaseKind::VoiceUnmute, CaseKind::VoiceDisconnect, CaseKind::VoiceMove] {
+            assert!(!k.is_punishment());
+        }
+    }
 }

@@ -43,8 +43,13 @@ async fn run(
         },
     )
     .await?;
-    let note = if case.dm_failed { " (DM could not be delivered)" } else { "" };
-    ephemeral(ctx, format!("Case #{}: {} applied to <@{}>.{note}", case.case_number, case.kind.label(), user.id)).await
+    match case {
+        Some(c) => {
+            let note = if c.dm_failed { " (DM could not be delivered)" } else { "" };
+            ephemeral(ctx, format!("Case #{}: {} applied to <@{}>.{note}", c.case_number, c.kind.label(), user.id)).await
+        }
+        None => ephemeral(ctx, format!("{} applied to <@{}>. Logged, no case.", spec.kind.label(), user.id)).await,
+    }
 }
 
 /// Warn a member.
