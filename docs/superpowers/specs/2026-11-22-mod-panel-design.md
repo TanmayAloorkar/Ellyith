@@ -116,7 +116,7 @@ Same description pattern as the other categories, groups *People*, *Messages & l
 
 New slash command and the panel button share one implementation.
 
-`/purge amount:<text> [channel:<text channel>] [member:<user>] [reason:<text>]`; `channel` defaults to the channel the command is typed in. The panel always asks for the channel (§5.3). Required permission: **Manage Messages** (or a mod role, per the step-1a permission model). Bot needs Manage Messages and Read Message History in that channel.
+`/purge amount:<text> [channel:<text channel>] [member:<user>] [reason:<text>]`; `channel` defaults to the channel the command is typed in. The panel always asks for the channel (§5.3). Required permission: **Manage Messages** in that channel; a mod role alone is not enough (owner ruling 2026-11-22). Owner and Administrator bypass. Bot needs Manage Messages and Read Message History in that channel.
 
 - `amount` is either a whole number **1–1000** (delete the last N messages, not counting the command itself) or a duration in the existing duration format (`10m`, `2h`, `1d`; **max 14 days**) meaning "every message newer than that". *My call:* cap at 1000 messages per purge to bound time and API calls; a time-window purge also stops at 1000.
 - `member` optional: only that member's messages count toward N / are deleted.

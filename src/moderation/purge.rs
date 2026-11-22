@@ -83,8 +83,9 @@ pub async fn run(inv: &Invoker<'_>, channel: ChannelId, amount: PurgeAmount, mem
     let mod_m = require_member(inv, inv.user.id).await?;
     let mod_f = member_facts(inv.ctx, inv.guild_id, &mod_m).await?;
     let bypass = mod_f.is_owner || mod_f.permissions.contains(Permissions::ADMINISTRATOR);
-    if !bypass && !channel_perms_ok(inv, channel, &mod_m, Permissions::VIEW_CHANNEL) {
-        return Err(UserError("You need to be able to see that channel.".into()).into());
+    // A mod role alone is not enough: the moderator needs Manage Messages in that channel.
+    if !bypass && !channel_perms_ok(inv, channel, &mod_m, Permissions::VIEW_CHANNEL | Permissions::MANAGE_MESSAGES) {
+        return Err(UserError("You need Manage Messages in that channel.".into()).into());
     }
     let bot_id = inv.ctx.cache.current_user().id;
     let bot_m = require_member(inv, bot_id).await?;
