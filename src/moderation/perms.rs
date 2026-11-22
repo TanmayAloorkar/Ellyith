@@ -157,7 +157,8 @@ pub async fn authorize(
 /// Owner, Administrator or Manage Server.
 pub async fn require_manage_server(inv: &Invoker<'_>) -> Result<(), Error> {
     let denied = || UserError("You need Manage Server to use /config.".into());
-    let m = require_member(inv, inv.user.id).await.map_err(|_| denied())?;
+    // Only "absent" (a UserError from require_member) is a denial; HTTP/rate-limit errors propagate.
+    let m = require_member(inv, inv.user.id).await.map_err(|e| if e.is::<UserError>() { denied().into() } else { e })?;
     let ok = inv.ctx.cache.guild(inv.guild_id).is_some_and(|g| {
         g.owner_id == m.user.id || g.member_permissions(&m).manage_guild()
     });
