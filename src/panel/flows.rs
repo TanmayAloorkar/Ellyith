@@ -1,4 +1,4 @@
-use super::id::{Action, PanelId};
+use super::id::{Action, Category, PanelId};
 use super::view;
 use crate::duration::parse_duration;
 use crate::invoker::Invoker;
@@ -16,7 +16,7 @@ use poise::serenity_prelude::{
     EditInteractionResponse, InputTextStyle, MessageFlags, ModalInteraction, UserId,
 };
 
-const STALE: &str = "This panel is out of date — ask an admin to run /config panel again.";
+pub(super) const STALE: &str = "This panel is out of date — ask an admin to run /config panel again.";
 const GENERIC: &str = "Something went wrong. The error was logged.";
 
 // ---- pure helpers ----
@@ -127,22 +127,26 @@ async fn exec(inv: &Invoker<'_>, a: Action, user: Option<UserId>, chan: Option<C
 }
 
 /// Same wording as the slash-command error handler: refusals are shown, anything else is logged.
-fn outcome(a: Action, res: Result<CreateEmbed, Error>) -> CreateEmbed {
+pub(super) fn outcome_of(what: impl std::fmt::Debug, dm: bool, res: Result<CreateEmbed, Error>) -> CreateEmbed {
     match res {
         Ok(e) => e,
         Err(e) => match e.downcast_ref::<UserError>() {
-            Some(u) => refused(&u.0, dm_possible(a)),
+            Some(u) => refused(&u.0, dm),
             None => {
-                tracing::error!("panel action {a:?} failed: {e:?}");
+                tracing::error!("panel action {what:?} failed: {e:?}");
                 refused(GENERIC, false)
             }
         },
     }
 }
 
+fn outcome(a: Action, res: Result<CreateEmbed, Error>) -> CreateEmbed {
+    outcome_of(a, dm_possible(a), res)
+}
+
 // ---- response builders ----
 
-fn msg(embed: CreateEmbed, rows: Vec<CreateActionRow>) -> CreateInteractionResponseMessage {
+pub(super) fn msg(embed: CreateEmbed, rows: Vec<CreateActionRow>) -> CreateInteractionResponseMessage {
     CreateInteractionResponseMessage::new().embed(embed).components(rows).allowed_mentions(CreateAllowedMentions::new())
 }
 
@@ -204,16 +208,15 @@ async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIntera
     let Some(id) = PanelId::decode(&ci.data.custom_id) else { return stale(ctx, ci).await };
     let in_ephemeral = ci.message.flags.is_some_and(|f| f.contains(MessageFlags::EPHEMERAL));
     // Panel navigation edits an ephemeral reply in place; the public panel gets a new ephemeral one.
-    let show = |(e, rows): (CreateEmbed, Vec<CreateActionRow>)| {
-        if in_ephemeral {
-            CreateInteractionResponse::UpdateMessage(msg(e, rows))
-        } else {
-            CreateInteractionResponse::Message(msg(e, rows).ephemeral(true))
-        }
-    };
+    let show = |v| show_views(in_ephemeral, v);
     let reply = match id {
         PanelId::Home => show(view::home()),
+        PanelId::Category(Category::Config) => {
+            let inv = Invoker::from_interaction(ctx, data, ci.guild_id.expect("checked in handle"), &ci.user);
+            show(super::config::category(&inv).await)
+        }
         PanelId::Category(c) => show(view::category(c)),
+        PanelId::Config(c) => return super::config::on_component(ctx, data, ci, c).await,
         PanelId::Action(Action::Purge) => prompt(
             Action::Purge,
             "which channel?",
@@ -254,7 +257,7 @@ async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIntera
     Ok(())
 }
 
-async fn stale(ctx: &serenity::Context, ci: &ComponentInteraction) -> Result<(), Error> {
+pub(super) async fn stale(ctx: &serenity::Context, ci: &ComponentInteraction) -> Result<(), Error> {
     ci.create_response(&ctx.http, CreateInteractionResponse::Message(msg(refused(STALE, false), vec![]).ephemeral(true))).await?;
     Ok(())
 }
@@ -267,14 +270,18 @@ async fn open_modal(ctx: &serenity::Context, ci: &ComponentInteraction, a: Actio
     Ok(())
 }
 
-async fn on_modal(ctx: &serenity::Context, data: &Data, mi: &ModalInteraction) -> Result<(), Error> {
-    let Some(PanelId::Modal(a, user, chan)) = PanelId::decode(&mi.data.custom_id) else {
-        mi.create_response(&ctx.http, CreateInteractionResponse::Message(msg(refused(STALE, false), vec![]).ephemeral(true))).await?;
-        return Ok(());
-    };
-    mi.create_response(&ctx.http, CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new().ephemeral(true))).await?;
-    let values: Vec<String> = mi
-        .data
+/// Edit a navigation message in place when it is already ephemeral, else open a new ephemeral one.
+pub(super) fn show_views(in_ephemeral: bool, (e, rows): (CreateEmbed, Vec<CreateActionRow>)) -> CreateInteractionResponse {
+    if in_ephemeral {
+        CreateInteractionResponse::UpdateMessage(msg(e, rows))
+    } else {
+        CreateInteractionResponse::Message(msg(e, rows).ephemeral(true))
+    }
+}
+
+/// Text input values of a submitted pop-up, in order.
+pub(super) fn modal_values(mi: &ModalInteraction) -> Vec<String> {
+    mi.data
         .components
         .iter()
         .flat_map(|r| r.components.iter())
@@ -282,7 +289,20 @@ async fn on_modal(ctx: &serenity::Context, data: &Data, mi: &ModalInteraction) -
             ActionRowComponent::InputText(t) => Some(t.value.clone().unwrap_or_default()),
             _ => None,
         })
-        .collect();
+        .collect()
+}
+
+async fn on_modal(ctx: &serenity::Context, data: &Data, mi: &ModalInteraction) -> Result<(), Error> {
+    let decoded = PanelId::decode(&mi.data.custom_id);
+    if let Some(PanelId::Config(c)) = decoded {
+        return super::config::on_modal(ctx, data, mi, c).await;
+    }
+    let Some(PanelId::Modal(a, user, chan)) = decoded else {
+        mi.create_response(&ctx.http, CreateInteractionResponse::Message(msg(refused(STALE, false), vec![]).ephemeral(true))).await?;
+        return Ok(());
+    };
+    mi.create_response(&ctx.http, CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new().ephemeral(true))).await?;
+    let values = modal_values(mi);
     let inv = Invoker::from_interaction(ctx, data, mi.guild_id.expect("checked in handle"), &mi.user);
     let embed = outcome(a, exec(&inv, a, user, chan, &values).await);
     mi.edit_response(&ctx.http, result_edit(embed)).await?;

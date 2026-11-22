@@ -1,4 +1,8 @@
+use crate::logging::LogCategory;
+use crate::moderation::cases::CaseKind;
+use crate::moderation::commands::config_core::RoleList;
 use poise::serenity_prelude::{ChannelId, UserId};
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
@@ -35,6 +39,55 @@ pub enum Action {
     NoteDelete,
 }
 
+/// Config sub-views opened from the Config category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    ModRoles,
+    Protected,
+    Logs,
+    Dm,
+    Ladder,
+    Decay,
+    Filter,
+}
+
+/// Config pop-ups: the button opens it, the submit carries the same token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Form {
+    LadderAdd,
+    LadderRemove,
+    DecayOn,
+    Words,
+    Hoist,
+    Fallback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigId {
+    /// Sub-view button.
+    Open(Page),
+    /// Role select, saved on select.
+    Roles(RoleList),
+    /// Log category string select.
+    LogCat,
+    /// Log channel select for a category.
+    LogChan(LogCategory),
+    LogOff(LogCategory),
+    /// DM kind string select.
+    DmKind,
+    /// DM text pop-up submit.
+    DmText(CaseKind),
+    /// Show-moderator toggle carrying the new value.
+    DmShowMod(bool),
+    /// Button that opens a pop-up.
+    Form(Form),
+    /// Pop-up submit.
+    Submit(Form),
+    DecayOff,
+    /// Filter on/off button carrying the new value.
+    FilterSet(bool),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelId {
     /// Back to the category list.
@@ -47,6 +100,85 @@ pub enum PanelId {
     PickChannel(Action, Option<UserId>),
     /// Pop-up submit.
     Modal(Action, Option<UserId>, Option<ChannelId>),
+    Config(ConfigId),
+}
+
+const PAGES: [(Page, &str); 7] = [
+    (Page::ModRoles, "modroles"),
+    (Page::Protected, "protected"),
+    (Page::Logs, "logs"),
+    (Page::Dm, "dm"),
+    (Page::Ladder, "ladder"),
+    (Page::Decay, "decay"),
+    (Page::Filter, "filter"),
+];
+
+const FORMS: [(Form, &str); 6] = [
+    (Form::LadderAdd, "ladadd"),
+    (Form::LadderRemove, "ladrem"),
+    (Form::DecayOn, "decayon"),
+    (Form::Words, "words"),
+    (Form::Hoist, "hoist"),
+    (Form::Fallback, "fallback"),
+];
+
+const ROLE_LISTS: [(RoleList, &str); 2] = [(RoleList::Mod, "mod"), (RoleList::Protected, "prot")];
+
+fn tok<T: Copy + PartialEq>(table: &[(T, &'static str)], v: T) -> &'static str {
+    table.iter().find(|(x, _)| *x == v).unwrap().1
+}
+
+fn untok<T: Copy>(table: &[(T, &'static str)], s: &str) -> Option<T> {
+    table.iter().find(|(_, t)| *t == s).map(|(x, _)| *x)
+}
+
+fn log_cat(s: &str) -> Option<LogCategory> {
+    LogCategory::ALL.into_iter().find(|c| c.as_str() == s)
+}
+
+fn flag(s: &str) -> Option<bool> {
+    match s {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => None,
+    }
+}
+
+impl ConfigId {
+    fn encode(&self) -> String {
+        match self {
+            ConfigId::Open(p) => format!("mp:g:o:{}", tok(&PAGES, *p)),
+            ConfigId::Roles(r) => format!("mp:g:r:{}", tok(&ROLE_LISTS, *r)),
+            ConfigId::LogCat => "mp:g:lc".into(),
+            ConfigId::LogChan(c) => format!("mp:g:lh:{}", c.as_str()),
+            ConfigId::LogOff(c) => format!("mp:g:lo:{}", c.as_str()),
+            ConfigId::DmKind => "mp:g:dk".into(),
+            ConfigId::DmText(k) => format!("mp:g:dt:{}", k.as_str()),
+            ConfigId::DmShowMod(v) => format!("mp:g:ds:{}", *v as u8),
+            ConfigId::Form(f) => format!("mp:g:f:{}", tok(&FORMS, *f)),
+            ConfigId::Submit(f) => format!("mp:g:s:{}", tok(&FORMS, *f)),
+            ConfigId::DecayOff => "mp:g:do".into(),
+            ConfigId::FilterSet(v) => format!("mp:g:fi:{}", *v as u8),
+        }
+    }
+
+    fn decode(parts: &[&str]) -> Option<Self> {
+        match parts {
+            ["o", p] => untok(&PAGES, p).map(ConfigId::Open),
+            ["r", r] => untok(&ROLE_LISTS, r).map(ConfigId::Roles),
+            ["lc"] => Some(ConfigId::LogCat),
+            ["lh", c] => log_cat(c).map(ConfigId::LogChan),
+            ["lo", c] => log_cat(c).map(ConfigId::LogOff),
+            ["dk"] => Some(ConfigId::DmKind),
+            ["dt", k] => CaseKind::from_str(k).ok().map(ConfigId::DmText),
+            ["ds", v] => flag(v).map(ConfigId::DmShowMod),
+            ["f", f] => untok(&FORMS, f).map(ConfigId::Form),
+            ["s", f] => untok(&FORMS, f).map(ConfigId::Submit),
+            ["do"] => Some(ConfigId::DecayOff),
+            ["fi", v] => flag(v).map(ConfigId::FilterSet),
+            _ => None,
+        }
+    }
 }
 
 const CATEGORIES: [(Category, &str); 5] = [
@@ -124,6 +256,7 @@ impl PanelId {
             PanelId::PickUser(a) => format!("mp:u:{}", a.token()),
             PanelId::PickChannel(a, u) => format!("mp:p:{}:{}", a.token(), opt(u.map(|u| u.get()))),
             PanelId::Modal(a, u, c) => format!("mp:m:{}:{}:{}", a.token(), opt(u.map(|u| u.get())), opt(c.map(|c| c.get()))),
+            PanelId::Config(c) => c.encode(),
         }
     }
 
@@ -138,6 +271,7 @@ impl PanelId {
             ["u", a] => Action::parse(a).map(PanelId::PickUser),
             ["p", a, u] => Some(PanelId::PickChannel(Action::parse(a)?, user(u)?)),
             ["m", a, u, c] => Some(PanelId::Modal(Action::parse(a)?, user(u)?, chan(c)?)),
+            ["g", rest @ ..] => ConfigId::decode(rest).map(PanelId::Config),
             _ => None,
         }
     }
@@ -146,6 +280,20 @@ impl PanelId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn config_ids() -> Vec<ConfigId> {
+        let mut v = vec![ConfigId::LogCat, ConfigId::DmKind, ConfigId::DecayOff, ConfigId::DmShowMod(true), ConfigId::DmShowMod(false), ConfigId::FilterSet(true), ConfigId::FilterSet(false)];
+        v.extend(PAGES.iter().map(|(p, _)| ConfigId::Open(*p)));
+        v.extend(ROLE_LISTS.iter().map(|(r, _)| ConfigId::Roles(*r)));
+        v.extend(FORMS.iter().flat_map(|(f, _)| [ConfigId::Form(*f), ConfigId::Submit(*f)]));
+        for c in LogCategory::ALL {
+            v.extend([ConfigId::LogChan(c), ConfigId::LogOff(c)]);
+        }
+        for k in crate::moderation::templates::dm_kinds() {
+            v.push(ConfigId::DmText(*k));
+        }
+        v
+    }
 
     #[test]
     fn round_trips_and_rejects_junk() {
@@ -161,6 +309,7 @@ mod tests {
             PanelId::Modal(Action::Move, Some(big_u), Some(big_c)),
             PanelId::Modal(Action::Unban, None, None),
         ];
+        all.extend(config_ids().into_iter().map(PanelId::Config));
         all.extend(CATEGORIES.iter().map(|(c, _)| PanelId::Category(*c)));
         all.extend(ACTIONS.iter().map(|(a, _)| PanelId::Modal(*a, Some(big_u), Some(big_c))));
         for id in all {
@@ -168,7 +317,7 @@ mod tests {
             assert!(s.starts_with("mp:") && s.len() <= 100);
             assert_eq!(PanelId::decode(&s), Some(id));
         }
-        for junk in ["", "mp:", "mp:zz", "mp:m:kick:abc:-", "other:home", "mp:c:members:extra", "mp:m:kick:0:-", "mp:p:move:+5"] {
+        for junk in ["", "mp:", "mp:zz", "mp:m:kick:abc:-", "other:home", "mp:c:members:extra", "mp:m:kick:0:-", "mp:p:move:+5", "mp:g", "mp:g:o:zz", "mp:g:ds:2", "mp:g:lh:nope", "mp:g:dt:ban:x", "mp:g:dt:note"] {
             assert_eq!(PanelId::decode(junk), None, "{junk}");
         }
     }

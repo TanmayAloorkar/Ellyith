@@ -1,4 +1,5 @@
 pub mod config;
+pub mod config_core;
 pub mod punish;
 pub mod cases;
 pub mod nick;

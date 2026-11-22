@@ -1,16 +1,16 @@
+use crate::duration::parse_duration;
 use crate::invoker::Invoker;
-use crate::moderation::perms::require_manage_server;
 use crate::logging::{self, LogCategory};
 use crate::moderation::cases::CaseKind;
-use crate::duration::{format_duration, parse_duration};
+use crate::moderation::commands::config_core::{self as core, describe_rule, role_mentions, RoleList};
 use crate::moderation::ladder::{self, LadderAction, LadderRule};
-use crate::moderation::nickname::validate_filter_config;
+use crate::moderation::perms::require_manage_server;
 use crate::moderation::templates;
-use crate::settings::{self, GuildSettings};
-use crate::{Context, Error, UserError};
 use crate::panel::view;
 use crate::reply::{self, Tone};
-use poise::serenity_prelude::{self as serenity, CreateAllowedMentions, CreateMessage, GuildChannel, MessageId, Role};
+use crate::settings::{self, GuildSettings};
+use crate::{Context, Error, UserError};
+use poise::serenity_prelude::{self as serenity, CreateAllowedMentions, CreateMessage, GuildChannel, MessageId, Role, RoleId};
 
 /// Manage Server only (owner and Administrators pass too).
 async fn manage_guild(ctx: Context<'_>) -> Result<bool, Error> {
@@ -45,37 +45,37 @@ pub async fn protected(_: Context<'_>) -> Result<(), Error> {
 /// Add a moderator role.
 #[poise::command(slash_command, guild_only, rename = "add")]
 pub async fn modroles_add(ctx: Context<'_>, role: Role) -> Result<(), Error> {
-    edit(ctx, role, |s| &mut s.mod_roles, true, "moderator").await
+    edit(ctx, RoleList::Mod, role.id, true).await
 }
 
 /// Remove a moderator role.
 #[poise::command(slash_command, guild_only, rename = "remove")]
 pub async fn modroles_remove(ctx: Context<'_>, role: Role) -> Result<(), Error> {
-    edit(ctx, role, |s| &mut s.mod_roles, false, "moderator").await
+    edit(ctx, RoleList::Mod, role.id, false).await
 }
 
 /// List moderator roles.
 #[poise::command(slash_command, guild_only, rename = "list")]
 pub async fn modroles_list(ctx: Context<'_>) -> Result<(), Error> {
-    list(ctx, |s| &s.mod_roles, "Moderator roles").await
+    list(ctx, RoleList::Mod).await
 }
 
 /// Add a protected role.
 #[poise::command(slash_command, guild_only, rename = "add")]
 pub async fn protected_add(ctx: Context<'_>, role: Role) -> Result<(), Error> {
-    edit(ctx, role, |s| &mut s.protected_roles, true, "protected").await
+    edit(ctx, RoleList::Protected, role.id, true).await
 }
 
 /// Remove a protected role.
 #[poise::command(slash_command, guild_only, rename = "remove")]
 pub async fn protected_remove(ctx: Context<'_>, role: Role) -> Result<(), Error> {
-    edit(ctx, role, |s| &mut s.protected_roles, false, "protected").await
+    edit(ctx, RoleList::Protected, role.id, false).await
 }
 
 /// List protected roles.
 #[poise::command(slash_command, guild_only, rename = "list")]
 pub async fn protected_list(ctx: Context<'_>) -> Result<(), Error> {
-    list(ctx, |s| &s.protected_roles, "Protected roles").await
+    list(ctx, RoleList::Protected).await
 }
 
 fn guild_id(ctx: Context<'_>) -> Result<i64, Error> {
@@ -83,52 +83,31 @@ fn guild_id(ctx: Context<'_>) -> Result<i64, Error> {
     Ok(id.get() as i64)
 }
 
-async fn edit(
-    ctx: Context<'_>,
-    role: Role,
-    field: fn(&mut GuildSettings) -> &mut Vec<i64>,
-    add: bool,
-    kind: &str,
-) -> Result<(), Error> {
-    let db = &ctx.data().db;
-    let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
-    let id = role.id.get() as i64;
-    let v = field(&mut s);
-    let msg = if add {
-        if v.contains(&id) {
-            format!("{} is already a {kind} role.", role.name)
-        } else {
-            v.push(id);
-            format!("Added {} as a {kind} role.", role.name)
-        }
-    } else if let Some(i) = v.iter().position(|r| *r == id) {
-        v.remove(i);
-        format!("Removed {} from {kind} roles.", role.name)
-    } else {
-        format!("{} is not a {kind} role.", role.name)
-    };
-    settings::save(db, &s).await?;
-    ctx.send(poise::CreateReply::default().content(msg).ephemeral(true)).await?;
-    Ok(())
+fn roles_of(s: &GuildSettings, which: RoleList) -> &Vec<i64> {
+    match which {
+        RoleList::Mod => &s.mod_roles,
+        RoleList::Protected => &s.protected_roles,
+    }
 }
 
-async fn list(ctx: Context<'_>, field: fn(&GuildSettings) -> &Vec<i64>, title: &str) -> Result<(), Error> {
+async fn edit(ctx: Context<'_>, which: RoleList, role: RoleId, add: bool) -> Result<(), Error> {
+    let inv = Invoker::from_poise(ctx)?;
     let s = settings::get_or_create(&ctx.data().db, guild_id(ctx)?).await?;
-    let ids = field(&s);
-    let body = if ids.is_empty() {
-        "none".to_string()
-    } else {
-        ids.iter().map(|r| format!("<@&{r}>")).collect::<Vec<_>>().join(" ")
+    let mut ids: Vec<RoleId> = roles_of(&s, which).iter().map(|r| RoleId::new(*r as u64)).collect();
+    ids.retain(|r| *r != role);
+    if add {
+        ids.push(role);
+    }
+    reply::send(ctx, core::set_role_list(&inv, which, ids).await?).await
+}
+
+async fn list(ctx: Context<'_>, which: RoleList) -> Result<(), Error> {
+    let s = settings::get_or_create(&ctx.data().db, guild_id(ctx)?).await?;
+    let title = match which {
+        RoleList::Mod => "🛡️ Moderator roles",
+        RoleList::Protected => "🔒 Protected roles",
     };
-    // Empty allowed_mentions: show roles without pinging them.
-    ctx.send(
-        poise::CreateReply::default()
-            .content(format!("{title}: {body}"))
-            .ephemeral(true)
-            .allowed_mentions(CreateAllowedMentions::new()),
-    )
-    .await?;
-    Ok(())
+    reply::send(ctx, reply::list(Tone::Config, title, Some(&role_mentions(roles_of(&s, which))), &[])).await
 }
 
 /// Per-category log channels.
@@ -139,45 +118,23 @@ pub async fn logs(_: Context<'_>) -> Result<(), Error> {
 
 /// Send a log category to a channel.
 #[poise::command(slash_command, guild_only, rename = "set")]
-pub async fn logs_set(
-    ctx: Context<'_>,
-    category: LogCategory,
-    #[channel_types("Text", "News")] channel: GuildChannel,
-) -> Result<(), Error> {
-    let hello = poise::serenity_prelude::CreateMessage::new().content(format!("Logging {} here.", category.as_str()));
-    if channel.id.send_message(ctx, hello).await.is_err() {
-        return Err(UserError("I can't post in that channel — check my permissions there.".into()).into());
-    }
-    logging::set_channel(&ctx.data().db, guild_id(ctx)?, category, channel.id.get() as i64).await?;
-    ephemeral(ctx, format!("{} logs go to <#{}>.", category.as_str(), channel.id)).await
+pub async fn logs_set(ctx: Context<'_>, category: LogCategory, #[channel_types("Text", "News")] channel: GuildChannel) -> Result<(), Error> {
+    reply::send(ctx, core::set_log_channel(&Invoker::from_poise(ctx)?, category, Some(channel.id)).await?).await
 }
 
 /// Stop logging a category.
 #[poise::command(slash_command, guild_only, rename = "disable")]
 pub async fn logs_disable(ctx: Context<'_>, category: LogCategory) -> Result<(), Error> {
-    let msg = if logging::clear(&ctx.data().db, guild_id(ctx)?, category).await? {
-        format!("{} logs disabled.", category.as_str())
-    } else {
-        format!("{} logs were not enabled.", category.as_str())
-    };
-    ephemeral(ctx, msg).await
+    reply::send(ctx, core::set_log_channel(&Invoker::from_poise(ctx)?, category, None).await?).await
 }
 
 /// Show log channels.
 #[poise::command(slash_command, guild_only, rename = "list")]
 pub async fn logs_list(ctx: Context<'_>) -> Result<(), Error> {
     let rows = logging::list(&ctx.data().db, guild_id(ctx)?).await?;
-    let body = if rows.is_empty() {
-        "none".to_string()
-    } else {
-        rows.iter().map(|(c, ch)| format!("{}: <#{ch}>", c.as_str())).collect::<Vec<_>>().join("\n")
-    };
-    ephemeral(ctx, format!("Log channels:\n{body}")).await
-}
-
-pub(crate) async fn ephemeral(ctx: Context<'_>, msg: String) -> Result<(), Error> {
-    ctx.send(poise::CreateReply::default().content(msg).ephemeral(true).allowed_mentions(CreateAllowedMentions::new())).await?;
-    Ok(())
+    let lines = rows.iter().map(|(c, ch)| format!("**{}** <#{ch}>", c.as_str())).collect();
+    let intro = if rows.is_empty() { "none" } else { "Where each kind of log goes." };
+    reply::send(ctx, reply::list(Tone::Config, "📋 Log channels", Some(intro), &[("Channels", lines)])).await
 }
 
 /// Kinds that get a DM (mirrors `templates::dm_kinds()`).
@@ -211,18 +168,13 @@ pub async fn dm(_: Context<'_>) -> Result<(), Error> {
 /// Set a template. Placeholders: {action} {reason} {duration} {server} {case} {moderator}.
 #[poise::command(slash_command, guild_only, rename = "set")]
 pub async fn template_set(ctx: Context<'_>, kind: DmKind, text: String) -> Result<(), Error> {
-    if text.chars().count() > 1500 {
-        return Err(UserError("Template must be 1500 characters or fewer.".into()).into());
-    }
-    templates::set(&ctx.data().db, guild_id(ctx)?, kind.into(), &text).await?;
-    ephemeral(ctx, format!("{} template saved.", CaseKind::from(kind).label())).await
+    reply::send(ctx, core::set_dm_template(&Invoker::from_poise(ctx)?, kind.into(), Some(text)).await?).await
 }
 
 /// Restore the default template.
 #[poise::command(slash_command, guild_only, rename = "reset")]
 pub async fn template_reset(ctx: Context<'_>, kind: DmKind) -> Result<(), Error> {
-    templates::reset(&ctx.data().db, guild_id(ctx)?, kind.into()).await?;
-    ephemeral(ctx, format!("{} template reset to default.", CaseKind::from(kind).label())).await
+    reply::send(ctx, core::set_dm_template(&Invoker::from_poise(ctx)?, kind.into(), None).await?).await
 }
 
 /// Show the template in use.
@@ -234,17 +186,14 @@ pub async fn template_view(ctx: Context<'_>, kind: DmKind) -> Result<(), Error> 
         None => (templates::default_template(ck).to_string(), "default"),
     };
     // Defang backticks so the template cannot break out of the code block.
-    ephemeral(ctx, format!("{} template ({tag}):\n```\n{}\n```", ck.label(), text.replace("```", "'''"))).await
+    let body = format!("```\n{}\n```", text.replace("```", "'''"));
+    reply::send(ctx, reply::list(Tone::Config, &format!("✉️ {} message ({tag})", ck.label()), Some(&body), &[])).await
 }
 
 /// Show the moderator's name in DMs.
 #[poise::command(slash_command, guild_only, rename = "showmod")]
 pub async fn dm_showmod(ctx: Context<'_>, show: bool) -> Result<(), Error> {
-    let db = &ctx.data().db;
-    let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
-    s.dm_show_moderator = show;
-    settings::save(db, &s).await?;
-    ephemeral(ctx, format!("Moderator name in DMs: {}.", if show { "on" } else { "off" })).await
+    reply::send(ctx, core::set_dm_showmod(&Invoker::from_poise(ctx)?, show).await?).await
 }
 
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
@@ -277,41 +226,22 @@ pub async fn ladder(_: Context<'_>) -> Result<(), Error> {
 pub async fn ladder_set(ctx: Context<'_>, warns: i32, action: LadderChoice, duration: Option<String>) -> Result<(), Error> {
     let duration_secs = duration.as_deref().map(parse_duration).transpose()?.map(|d| d.num_seconds());
     let rule = LadderRule { warn_count: warns, action: action.into(), duration_secs };
-    ladder::validate_rule(&rule)?;
-    ladder::set_rule(&ctx.data().db, guild_id(ctx)?, &rule).await?;
-    ephemeral(ctx, format!("At {warns} warnings: {}.", describe_rule(&rule))).await
+    reply::send(ctx, core::ladder_add(&Invoker::from_poise(ctx)?, rule).await?).await
 }
 
 /// Remove the rule for a warning count.
 #[poise::command(slash_command, guild_only, rename = "remove")]
 pub async fn ladder_remove(ctx: Context<'_>, warns: i32) -> Result<(), Error> {
-    let msg = if ladder::remove_rule(&ctx.data().db, guild_id(ctx)?, warns).await? {
-        format!("Removed the rule for {warns} warnings.")
-    } else {
-        format!("No rule for {warns} warnings.")
-    };
-    ephemeral(ctx, msg).await
+    reply::send(ctx, core::ladder_remove(&Invoker::from_poise(ctx)?, warns).await?).await
 }
 
 /// Show the ladder.
 #[poise::command(slash_command, guild_only, rename = "list")]
 pub async fn ladder_list(ctx: Context<'_>) -> Result<(), Error> {
     let rules = ladder::list_rules(&ctx.data().db, guild_id(ctx)?).await?;
-    let body = if rules.is_empty() {
-        "none".to_string()
-    } else {
-        rules.iter().map(|r| format!("{} warnings: {}", r.warn_count, describe_rule(r))).collect::<Vec<_>>().join("
-")
-    };
-    ephemeral(ctx, format!("Ladder:
-{body}")).await
-}
-
-fn describe_rule(r: &LadderRule) -> String {
-    match r.duration_secs {
-        Some(s) => format!("{} for {}", r.action.as_str(), format_duration(chrono::Duration::seconds(s))),
-        None => r.action.as_str().to_string(),
-    }
+    let lines = rules.iter().map(|r| format!("**{} warnings** {}", r.warn_count, describe_rule(r))).collect();
+    let intro = if rules.is_empty() { "none" } else { "Auto-punish at an exact warning count." };
+    reply::send(ctx, reply::list(Tone::Config, "📈 Ladder", Some(intro), &[("Rules", lines)])).await
 }
 
 /// Warnings expire after a number of days.
@@ -323,27 +253,13 @@ pub async fn decay(_: Context<'_>) -> Result<(), Error> {
 /// Turn warning decay on.
 #[poise::command(slash_command, guild_only, rename = "on")]
 pub async fn decay_on(ctx: Context<'_>, days: i32) -> Result<(), Error> {
-    if !(1..=365).contains(&days) {
-        return Err(UserError("Days must be between 1 and 365.".into()).into());
-    }
-    set_decay(ctx, true, Some(days)).await
+    reply::send(ctx, core::set_decay(&Invoker::from_poise(ctx)?, Some(days)).await?).await
 }
 
 /// Turn warning decay off.
 #[poise::command(slash_command, guild_only, rename = "off")]
 pub async fn decay_off(ctx: Context<'_>) -> Result<(), Error> {
-    set_decay(ctx, false, None).await
-}
-
-async fn set_decay(ctx: Context<'_>, on: bool, days: Option<i32>) -> Result<(), Error> {
-    let db = &ctx.data().db;
-    let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
-    s.warn_decay_enabled = on;
-    if let Some(d) = days {
-        s.warn_decay_days = d;
-    }
-    settings::save(db, &s).await?;
-    ephemeral(ctx, if on { format!("Warnings now expire after {} days.", s.warn_decay_days) } else { "Warning decay off.".into() }).await
+    reply::send(ctx, core::set_decay(&Invoker::from_poise(ctx)?, None).await?).await
 }
 
 /// Words that are not allowed in nicknames.
@@ -359,31 +275,20 @@ pub async fn nickwords_add(ctx: Context<'_>, word: String) -> Result<(), Error> 
     if word.is_empty() {
         return Err(UserError("Word cannot be empty.".into()).into());
     }
-    let db = &ctx.data().db;
-    let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
-    if s.filtered_words.contains(&word) {
-        return ephemeral(ctx, format!("\"{word}\" is already filtered.")).await;
+    let mut words = settings::get_or_create(&ctx.data().db, guild_id(ctx)?).await?.filtered_words;
+    if !words.contains(&word) {
+        words.push(word);
     }
-    s.filtered_words.push(word.clone());
-    validate_filter_config(&s.nick_fallback, &s.filtered_words, &s.hoist_chars)?;
-    settings::save(db, &s).await?;
-    ephemeral(ctx, format!("Filtered \"{word}\".")).await
+    reply::send(ctx, core::set_nick_words(&Invoker::from_poise(ctx)?, words).await?).await
 }
 
 /// Stop filtering a word.
 #[poise::command(slash_command, guild_only, rename = "remove")]
 pub async fn nickwords_remove(ctx: Context<'_>, word: String) -> Result<(), Error> {
     let word = word.trim().to_lowercase();
-    let db = &ctx.data().db;
-    let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
-    let msg = if let Some(i) = s.filtered_words.iter().position(|w| *w == word) {
-        s.filtered_words.remove(i);
-        settings::save(db, &s).await?;
-        format!("Removed \"{word}\".")
-    } else {
-        format!("\"{word}\" was not filtered.")
-    };
-    ephemeral(ctx, msg).await
+    let mut words = settings::get_or_create(&ctx.data().db, guild_id(ctx)?).await?.filtered_words;
+    words.retain(|w| *w != word);
+    reply::send(ctx, core::set_nick_words(&Invoker::from_poise(ctx)?, words).await?).await
 }
 
 /// List filtered words.
@@ -391,7 +296,7 @@ pub async fn nickwords_remove(ctx: Context<'_>, word: String) -> Result<(), Erro
 pub async fn nickwords_list(ctx: Context<'_>) -> Result<(), Error> {
     let s = settings::get_or_create(&ctx.data().db, guild_id(ctx)?).await?;
     let body = if s.filtered_words.is_empty() { "none".to_string() } else { s.filtered_words.join(", ") };
-    ephemeral(ctx, format!("Filtered words: {body}")).await
+    reply::send(ctx, reply::list(Tone::Config, "🚫 Filtered words", Some(&body), &[])).await
 }
 
 /// Nickname filter settings.
@@ -403,46 +308,25 @@ pub async fn nickfilter(_: Context<'_>) -> Result<(), Error> {
 /// Turn the nickname filter on.
 #[poise::command(slash_command, guild_only, rename = "on")]
 pub async fn nickfilter_on(ctx: Context<'_>) -> Result<(), Error> {
-    set_nickfilter(ctx, true).await
+    reply::send(ctx, core::set_nick_filter(&Invoker::from_poise(ctx)?, true).await?).await
 }
 
 /// Turn the nickname filter off.
 #[poise::command(slash_command, guild_only, rename = "off")]
 pub async fn nickfilter_off(ctx: Context<'_>) -> Result<(), Error> {
-    set_nickfilter(ctx, false).await
-}
-
-async fn set_nickfilter(ctx: Context<'_>, on: bool) -> Result<(), Error> {
-    let db = &ctx.data().db;
-    let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
-    s.nick_filter_enabled = on;
-    settings::save(db, &s).await?;
-    ephemeral(ctx, format!("Nickname filter: {}.", if on { "on" } else { "off" })).await
+    reply::send(ctx, core::set_nick_filter(&Invoker::from_poise(ctx)?, false).await?).await
 }
 
 /// Characters a nickname may not start with.
 #[poise::command(slash_command, guild_only, rename = "hoist")]
 pub async fn nickfilter_hoist(ctx: Context<'_>, chars: String) -> Result<(), Error> {
-    let db = &ctx.data().db;
-    let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
-    validate_filter_config(&s.nick_fallback, &s.filtered_words, &chars)?;
-    s.hoist_chars = chars;
-    settings::save(db, &s).await?;
-    ephemeral(ctx, format!("Hoisting characters: {}", s.hoist_chars)).await
+    reply::send(ctx, core::set_hoist(&Invoker::from_poise(ctx)?, chars).await?).await
 }
 
 /// Nickname given to members whose name is reset.
 #[poise::command(slash_command, guild_only, rename = "fallback")]
 pub async fn nickfilter_fallback(ctx: Context<'_>, name: String) -> Result<(), Error> {
-    if name.chars().count() > 32 {
-        return Err(UserError("Nicknames can be at most 32 characters.".into()).into());
-    }
-    let db = &ctx.data().db;
-    let mut s = settings::get_or_create(db, guild_id(ctx)?).await?;
-    validate_filter_config(&name, &s.filtered_words, &s.hoist_chars)?;
-    s.nick_fallback = name;
-    settings::save(db, &s).await?;
-    ephemeral(ctx, format!("Fallback nickname: {}", s.nick_fallback)).await
+    reply::send(ctx, core::set_fallback(&Invoker::from_poise(ctx)?, name).await?).await
 }
 
 /// Discord says the message or channel is gone: Unknown Channel (10003) or Unknown Message (10008).

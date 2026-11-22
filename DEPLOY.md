@@ -56,6 +56,11 @@ Config commands (Manage Server only):
 - `/config decay on|off`
 - `/config nickwords add|remove|list`
 - `/config nickfilter on|off|hoist|fallback`
+- `/config panel <channel>` posts the moderation panel (replaces the previous one)
+
+Moderation commands (mods):
+
+- `/purge` deletes recent messages by count or time
 
 ## 5. Smoke test
 
@@ -65,6 +70,7 @@ Run these in the live server:
 2. `/config logs set mod_actions #mod-log` confirms.
 3. `/warn` an alt account. A case appears and an embed lands in `#mod-log`.
 4. `/case remove` that case. It is marked removed and no longer counts.
+5. `/config panel #channel`, then kick an alt through the panel (Members, Kick). A case appears and the DM and log entry match the slash command.
 
 ## 6. Memory check
 

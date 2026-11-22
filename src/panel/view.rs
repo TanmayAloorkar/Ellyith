@@ -1,4 +1,4 @@
-use super::id::{Action, Category, PanelId};
+use super::id::{Action, Category, ConfigId, Page, PanelId};
 use crate::reply::Tone;
 use poise::serenity_prelude::{ButtonStyle, CreateActionRow, CreateButton, CreateEmbed, CreateEmbedFooter};
 
@@ -78,11 +78,12 @@ const RECORDS: &[Group] = &[
     ]),
 ];
 
-/// Config text only: its action buttons arrive with the config ids.
-const CONFIG: &[(&str, &[(&str, &str)])] = &[
-    ("People", &[("🛡️ Mod roles", "Who can use moderation."), ("🔒 Protected", "Roles mods can't act on.")]),
-    ("Messages & logs", &[("📋 Log channels", "Where each kind of log goes."), ("✉️ DM messages", "What members are told when punished.")]),
-    ("Rules", &[("📈 Ladder", "Auto-punish after N warnings."), ("⏱️ Warn decay", "Old warnings stop counting."), ("🚫 Name filter", "Reset bad nicknames.")]),
+type ConfigItem = (Page, &'static str, &'static str);
+
+const CONFIG: &[(&str, &[ConfigItem])] = &[
+    ("People", &[(Page::ModRoles, "🛡️ Mod roles", "Who can use moderation."), (Page::Protected, "🔒 Protected", "Roles mods can't act on.")]),
+    ("Messages & logs", &[(Page::Logs, "📋 Log channels", "Where each kind of log goes."), (Page::Dm, "✉️ DM messages", "What members are told when punished.")]),
+    ("Rules", &[(Page::Ladder, "📈 Ladder", "Auto-punish after N warnings."), (Page::Decay, "⏱️ Warn decay", "Old warnings stop counting."), (Page::Filter, "🚫 Name filter", "Reset bad nicknames.")]),
 ];
 
 fn button(id: PanelId, label: &str, style: ButtonStyle) -> CreateButton {
@@ -95,6 +96,15 @@ fn back() -> CreateButton {
 
 pub fn back_row() -> CreateActionRow {
     CreateActionRow::Buttons(vec![back()])
+}
+
+/// Back to the Config category from a config sub-view.
+pub fn config_back_row() -> CreateActionRow {
+    CreateActionRow::Buttons(vec![button(PanelId::Category(Category::Config), "← Config", S)])
+}
+
+pub fn config_button(id: ConfigId, label: &str, style: ButtonStyle) -> CreateButton {
+    button(PanelId::Config(id), label, style)
 }
 
 /// Emoji and label of an action's panel button.
@@ -158,10 +168,17 @@ pub fn category(c: Category) -> Views {
         Category::Records => grouped(Tone::Records, "Records", "Look things up and keep notes.", RECORDS, None),
         Category::Config => {
             let mut e = CreateEmbed::new().colour(Tone::Config.colour()).title("Config").description("Bot settings. Changes apply right away.");
-            for (name, rows) in CONFIG {
-                e = e.field(*name, rows.iter().map(|(l, d)| line(l, d)).collect::<Vec<_>>().join("\n"), false);
+            let mut buttons = vec![];
+            for (name, items) in CONFIG {
+                e = e.field(*name, items.iter().map(|(_, l, d)| line(l, d)).collect::<Vec<_>>().join("
+"), false);
+                buttons.extend(items.iter().map(|(p, l, _)| config_button(ConfigId::Open(*p), l, S)));
             }
-            (e, vec![CreateActionRow::Buttons(vec![back()])])
+            // Four per row, Back last: matches the mockup.
+            let tail = buttons.split_off(4);
+            let mut second = tail;
+            second.push(back());
+            (e, vec![CreateActionRow::Buttons(buttons), CreateActionRow::Buttons(second)])
         }
     }
 }
