@@ -1,11 +1,12 @@
 //! Protection buttons. Raid alert, raid-ended review and alt card presses are mod-only, checked per press like review cards.
+//! Anti-nuke alert buttons are owner-or-trusted only.
 use super::flows::{outcome_of, STALE};
 use super::id::{AltAct, PanelId, ProtId};
 use crate::invoker::Invoker;
 use crate::moderation::actions::{execute, ActionRequest};
 use crate::moderation::cases::{Actor, CaseKind};
 use crate::moderation::perms::{authorize, is_absent};
-use crate::protection::{alts, raid};
+use crate::protection::{alts, antinuke, raid};
 use crate::reply::{self, Tone};
 use crate::safety::quarantine::{self, deny, release_core, QuarantineReason};
 use crate::{Data, Error, UserError};
@@ -168,6 +169,8 @@ pub async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIn
                 Ok(embed)
             }
             ProtId::Alt(act, user) => alt_press(ctx, data, ci, &inv, act, user).await,
+            ProtId::NukeRestore(strip) => antinuke::press(ctx, data, guild, ci.user.id, strip, false).await,
+            ProtId::NukeBan(strip) => antinuke::press(ctx, data, guild, ci.user.id, strip, true).await,
             ProtId::RaidBulkConfirm(_) | ProtId::ReviewPage(..) => unreachable!("answered above"),
         }
     }

@@ -142,34 +142,44 @@ pub fn nuke_limit(s: &ProtectionSettings, k: NukeKind) -> i32 {
 
 const MAX_KEYS: usize = 5_000;
 
+/// What tripped a limit: how many actions, from first to last, and the names noted for them.
+#[derive(Debug, PartialEq, Eq)]
+pub struct NukeHit {
+    pub count: usize,
+    pub span: Duration,
+    pub names: Vec<String>,
+}
+
+type NukeLog = VecDeque<(Instant, Option<String>)>;
+
 #[derive(Default)]
-pub struct NukeCounter(Mutex<HashMap<(u64, u64, NukeKind), VecDeque<Instant>>>);
+pub struct NukeCounter(Mutex<HashMap<(u64, u64, NukeKind), NukeLog>>);
 
 impl NukeCounter {
-    /// `Some(count)` the first time `limit` actions land in `window`; the key then resets.
-    pub fn record(&self, guild: u64, user: u64, kind: NukeKind, now: Instant, window: Duration, limit: i32) -> Option<usize> {
+    /// `Some(hit)` the first time `limit` actions land in `window`; the key then resets.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record(&self, guild: u64, user: u64, kind: NukeKind, now: Instant, window: Duration, limit: i32, name: Option<String>) -> Option<NukeHit> {
         let limit = usize::try_from(limit).ok().filter(|l| *l > 0)?;
         let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let key = (guild, user, kind);
         if !map.contains_key(&key) && map.len() >= MAX_KEYS {
-            map.retain(|_, v| v.back().is_some_and(|t| now.saturating_duration_since(*t) <= window));
+            map.retain(|_, v| v.back().is_some_and(|t| now.saturating_duration_since(t.0) <= window));
             // shortcut: drop new keys while full of live ones, raise only if real guilds ever hit 5000 live actors
             if map.len() >= MAX_KEYS {
                 return None;
             }
         }
         let q = map.entry(key).or_default();
-        while q.front().is_some_and(|t| now.saturating_duration_since(*t) > window) {
+        while q.front().is_some_and(|t| now.saturating_duration_since(t.0) > window) {
             q.pop_front();
         }
-        q.push_back(now);
-        let n = q.len();
-        if n >= limit {
-            map.remove(&key);
-            Some(n)
-        } else {
-            None
+        q.push_back((now, name));
+        if q.len() < limit {
+            return None;
         }
+        let q = map.remove(&key)?;
+        let span = q.back().map(|b| b.0).unwrap_or(now).saturating_duration_since(q.front().map(|f| f.0).unwrap_or(now));
+        Some(NukeHit { count: q.len(), span, names: q.into_iter().filter_map(|(_, n)| n).collect() })
     }
 }
 
@@ -301,12 +311,13 @@ mod tests {
         let t0 = Instant::now();
         let w = Duration::from_secs(10);
         let k = NukeKind::Ban;
-        assert_eq!(c.record(1, 2, k, t0, w, 3), None);
-        assert_eq!(c.record(1, 2, k, t0 + Duration::from_secs(1), w, 3), None);
-        assert_eq!(c.record(1, 2, k, t0 + Duration::from_secs(2), w, 3), Some(3));
-        assert_eq!(c.record(1, 2, k, t0 + Duration::from_secs(2), w, 3), None);
+        assert_eq!(c.record(1, 2, k, t0, w, 3, Some("#a".into())), None);
+        assert_eq!(c.record(1, 2, k, t0 + Duration::from_secs(1), w, 3, None), None);
+        let hit = c.record(1, 2, k, t0 + Duration::from_secs(6), w, 3, Some("#c".into())).unwrap();
+        assert_eq!(hit, NukeHit { count: 3, span: Duration::from_secs(6), names: vec!["#a".into(), "#c".into()] });
+        assert_eq!(c.record(1, 2, k, t0 + Duration::from_secs(6), w, 3, None), None);
         for i in 0..3 {
-            assert_eq!(c.record(1, 9, k, t0 + Duration::from_secs(i * 15), w, 3), None);
+            assert_eq!(c.record(1, 9, k, t0 + Duration::from_secs(i * 15), w, 3, None), None);
         }
     }
 

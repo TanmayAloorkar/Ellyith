@@ -7,6 +7,7 @@ use crate::moderation::commands::punish::punish;
 use crate::moderation::commands::{log_footer, username};
 use crate::moderation::perms::{authorize, is_absent, member_facts, require_manage_server, require_member};
 use crate::panel::id::PanelId;
+use crate::protection::logic::PunishSource;
 use crate::reply::{self, Tone};
 use crate::safety::logic::{roles_to_save, RoleInfo};
 use crate::safety::store::{self, QuarantineRow, SafetySettings};
@@ -89,7 +90,7 @@ fn setup_in(ctx: &serenity::Context, guild_id: GuildId, s: &SafetySettings) -> R
     Ok(require_setup(s, &g)?)
 }
 
-pub(super) async fn bot_top(ctx: &serenity::Context, guild_id: GuildId) -> Result<u16, Error> {
+pub async fn bot_top(ctx: &serenity::Context, guild_id: GuildId) -> Result<u16, Error> {
     let id = ctx.cache.current_user().id;
     let bot = guild_id.member(ctx, id).await?;
     Ok(member_facts(ctx, guild_id, &bot).await?.top_role_position)
@@ -271,7 +272,8 @@ pub async fn deny(inv: &Invoker<'_>, user: UserId) -> Result<CreateEmbed, Error>
         let lines = [("Note", "They had already left the server.".to_string())];
         return Ok(reply::done(Tone::Safety, &format!("{DENY_EMOJI} Denied {name}"), &lines, log_footer(inv).await.as_deref()));
     }
-    let reply = match punish(inv, kind, user, Some("Quarantine denied".into()), None, 0).await {
+    // Staff review decisions (card Deny, raid "Deny the rest") never count toward anti-nuke (spec §10.1).
+    let reply = match punish(inv, PunishSource::Automatic, kind, user, Some("Quarantine denied".into()), None, 0).await {
         Ok(r) => r,
         Err(e) => {
             // Put the row back so the saved roles are never lost.

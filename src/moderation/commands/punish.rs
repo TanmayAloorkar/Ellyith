@@ -4,6 +4,8 @@ use crate::moderation::actions::{execute, ActionRequest};
 use crate::moderation::cases::{Actor, CaseKind};
 use crate::moderation::commands::{action_reply, detail_lines};
 use crate::moderation::perms::{authorize, require_member};
+use crate::protection::antinuke;
+use crate::protection::logic::PunishSource;
 use crate::reply::{self, Tone};
 use crate::{Context, Error, UserError};
 use poise::serenity_prelude::{CreateEmbed, Permissions, User, UserId};
@@ -46,8 +48,10 @@ fn validate(kind: CaseKind, reason: Option<&str>, duration: Option<chrono::Durat
 }
 
 /// Run a punishment (or its undo) and build the styled reply. Authorises like the slash command.
+/// A kick or ban from `PunishSource::Command` counts toward anti-nuke against the invoker.
 pub async fn punish(
     inv: &Invoker<'_>,
+    src: PunishSource,
     kind: CaseKind,
     user: UserId,
     reason: Option<String>,
@@ -76,6 +80,9 @@ pub async fn punish(
         },
     )
     .await?;
+    if let Some(k) = antinuke::nuke_kind(src, kind) {
+        antinuke::count_command(inv.ctx, inv.data, inv.guild_id, inv.user.id, k, user).await;
+    }
     action_reply(inv, Tone::Members, kind, user, detail_lines(reason.as_deref(), duration), case.as_ref()).await
 }
 
@@ -83,7 +90,7 @@ pub async fn punish(
 async fn run(ctx: Context<'_>, kind: CaseKind, user: &User, reason: Option<String>, duration: Option<chrono::Duration>, days: u8) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
     let inv = Invoker::from_poise(ctx)?;
-    reply::send(ctx, punish(&inv, kind, user.id, reason, duration, days).await?).await
+    reply::send(ctx, punish(&inv, PunishSource::Command, kind, user.id, reason, duration, days).await?).await
 }
 
 /// Warn a member.

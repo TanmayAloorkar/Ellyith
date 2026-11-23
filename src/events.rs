@@ -2,7 +2,7 @@ use crate::automod::engine;
 use crate::moderation::jobs::{self, JobKind};
 use crate::logging::{audit, messages};
 use crate::moderation::nickname;
-use crate::protection::{invites, join};
+use crate::protection::{antinuke, invites, join};
 use crate::safety::quarantine;
 use crate::{Data, Error};
 use poise::serenity_prelude as serenity;
@@ -44,7 +44,8 @@ pub async fn event_handler(
         }
         serenity::FullEvent::VoiceStateUpdate { old, new } => audit::on_voice(ctx, data, old.as_ref(), new).await,
         serenity::FullEvent::GuildAuditLogEntryCreate { entry, guild_id } => {
-            audit::on_entry(ctx, data, *guild_id, entry).await
+            audit::on_entry(ctx, data, *guild_id, entry).await;
+            antinuke::on_entry(ctx, data, *guild_id, entry).await
         }
         serenity::FullEvent::GuildMemberUpdate { old_if_available, new, event } => {
             let now = event.nick.as_deref().or(event.user.global_name.as_deref()).unwrap_or(&event.user.name);
