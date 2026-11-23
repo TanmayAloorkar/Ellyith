@@ -118,9 +118,9 @@ pub async fn set_raid_lockdown(db: &PgPool, id: i64, started: bool) -> Result<()
     Ok(())
 }
 
-pub async fn end_raid(db: &PgPool, id: i64) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE protection_raids SET ended_at=now() WHERE id=$1 AND ended_at IS NULL").bind(id).execute(db).await?;
-    Ok(())
+/// False when the raid had already ended.
+pub async fn end_raid(db: &PgPool, id: i64) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query("UPDATE protection_raids SET ended_at=now() WHERE id=$1 AND ended_at IS NULL").bind(id).execute(db).await?.rows_affected() == 1)
 }
 
 /// Active raids whose end time has passed.

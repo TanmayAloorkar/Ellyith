@@ -48,7 +48,8 @@ async fn raid_state_survives_reload(pool: PgPool) {
     assert_eq!((a.alert_channel, a.alert_message, a.started_lockdown), (Some(5), Some(6), true));
     assert!(due_raids(&pool, now + Duration::minutes(11)).await.unwrap().is_empty());
 
-    end_raid(&pool, r.id).await.unwrap();
+    assert!(end_raid(&pool, r.id).await.unwrap());
+    assert!(!end_raid(&pool, r.id).await.unwrap());
     assert!(active_raid(&pool, 1).await.unwrap().is_none());
     assert!(start_raid(&pool, 1, now + Duration::minutes(10)).await.is_ok());
 }

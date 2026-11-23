@@ -22,6 +22,7 @@ pub async fn run(ctx: serenity::Context, data: Data) {
                 tracing::warn!("scheduler: pruning ban records failed: {e}");
             }
         }
+        crate::protection::raid::tick(&ctx, &data).await;
         match jobs::due(&data.db, Utc::now()).await {
             Ok(list) => {
                 for job in list {

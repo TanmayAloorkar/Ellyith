@@ -268,6 +268,7 @@ async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIntera
         PanelId::Category(c) => show(view::category(c)),
         PanelId::AutoMod(a) => return super::automod::on_component(ctx, data, ci, a).await,
         PanelId::Config(c) => return super::config::on_component(ctx, data, ci, c).await,
+        PanelId::Protection(p) => return super::protection::on_component(ctx, data, ci, p).await,
         PanelId::Review(approve, user) => return on_review(ctx, data, ci, approve, user).await,
         PanelId::Verify => return verify::on_press(ctx, data, ci).await,
         PanelId::ReviewPick => return on_review_pick(ctx, data, ci).await,

@@ -1,5 +1,6 @@
 pub mod invites;
 pub mod logic;
+pub mod raid;
 pub mod store;
 
 pub const EMOJI_PROTECTION: &str = "🚨";
@@ -15,6 +16,8 @@ pub struct Runtime {
     pub joins: std::sync::Mutex<std::collections::HashMap<u64, logic::JoinWindow>>,
     pub nuke: logic::NukeCounter,
     pub alert_edit: std::sync::Mutex<std::collections::HashMap<u64, std::time::Instant>>,
+    /// Active raid per guild: alert title and counts.
+    pub raids: std::sync::Mutex<std::collections::HashMap<u64, raid::RaidStats>>,
 }
 
 impl Runtime {

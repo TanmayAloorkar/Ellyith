@@ -150,6 +150,23 @@ pub enum AutoId {
     Submit(ListForm),
 }
 
+/// Protection ids. Raid ids carry the raid id so a review message keeps working after the raid ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtId {
+    /// End raid mode button on the raid alert.
+    RaidEnd,
+    /// Kick (false) or ban (true) all raiders: asks to confirm.
+    RaidBulk(bool),
+    /// The confirm button for `RaidBulk`.
+    RaidBulkConfirm(bool),
+    /// Approve multi-select on the raid-ended message: raid id, page.
+    ReviewApprove(i64, usize),
+    ReviewApproveAll(i64),
+    ReviewDenyRest(i64),
+    /// Show this page of the approve select.
+    ReviewPage(i64, usize),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelId {
     /// Back to the category list.
@@ -164,6 +181,7 @@ pub enum PanelId {
     Modal(Action, Option<UserId>, Option<ChannelId>),
     Config(ConfigId),
     AutoMod(AutoId),
+    Protection(ProtId),
     /// Quarantine review card: approve (true) or deny, for this user.
     Review(bool, UserId),
     /// Public Verify button on the verify message.
@@ -327,6 +345,38 @@ impl AutoId {
     }
 }
 
+/// Plain non-negative number with one encoding: no sign, no leading zero.
+fn num<T: FromStr>(s: &str) -> Option<T> {
+    (s == "0" || (!s.starts_with('0') && !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))).then(|| s.parse().ok()).flatten()
+}
+
+impl ProtId {
+    fn encode(&self) -> String {
+        match self {
+            ProtId::RaidEnd => "mp:pr:re".into(),
+            ProtId::RaidBulk(ban) => format!("mp:pr:rb:{}", *ban as u8),
+            ProtId::RaidBulkConfirm(ban) => format!("mp:pr:rc:{}", *ban as u8),
+            ProtId::ReviewApprove(r, p) => format!("mp:pr:ra:{r}:{p}"),
+            ProtId::ReviewApproveAll(r) => format!("mp:pr:aa:{r}"),
+            ProtId::ReviewDenyRest(r) => format!("mp:pr:dr:{r}"),
+            ProtId::ReviewPage(r, p) => format!("mp:pr:rp:{r}:{p}"),
+        }
+    }
+
+    fn decode(parts: &[&str]) -> Option<Self> {
+        match parts {
+            ["re"] => Some(ProtId::RaidEnd),
+            ["rb", v] => flag(v).map(ProtId::RaidBulk),
+            ["rc", v] => flag(v).map(ProtId::RaidBulkConfirm),
+            ["ra", r, p] => Some(ProtId::ReviewApprove(num(r)?, num(p)?)),
+            ["aa", r] => num(r).map(ProtId::ReviewApproveAll),
+            ["dr", r] => num(r).map(ProtId::ReviewDenyRest),
+            ["rp", r, p] => Some(ProtId::ReviewPage(num(r)?, num(p)?)),
+            _ => None,
+        }
+    }
+}
+
 const CATEGORIES: [(Category, &str); 7] = [
     (Category::Members, "members"),
     (Category::NamesVoice, "names"),
@@ -412,6 +462,7 @@ impl PanelId {
             PanelId::Modal(a, u, c) => format!("mp:m:{}:{}:{}", a.token(), opt(u.map(|u| u.get())), opt(c.map(|c| c.get()))),
             PanelId::Config(c) => c.encode(),
             PanelId::AutoMod(a) => a.encode(),
+            PanelId::Protection(p) => p.encode(),
             PanelId::Verify => "mp:v".into(),
             PanelId::VerifyQuiz => "mp:vq".into(),
             PanelId::ReviewPick => "mp:rp".into(),
@@ -436,6 +487,7 @@ impl PanelId {
             ["rv", k @ ("a" | "d"), u] => Some(PanelId::Review(*k == "a", user(u)??)),
             ["g", rest @ ..] => ConfigId::decode(rest).map(PanelId::Config),
             ["z", rest @ ..] => AutoId::decode(rest).map(PanelId::AutoMod),
+            ["pr", rest @ ..] => ProtId::decode(rest).map(PanelId::Protection),
             _ => None,
         }
     }
@@ -493,6 +545,22 @@ mod tests {
                 .chain(LIST_FORMS.iter().flat_map(|(f, _)| [AutoId::Form(*f), AutoId::Submit(*f)]))
                 .map(PanelId::AutoMod),
         );
+        all.extend(
+            [
+                ProtId::RaidEnd,
+                ProtId::RaidBulk(true),
+                ProtId::RaidBulk(false),
+                ProtId::RaidBulkConfirm(true),
+                ProtId::RaidBulkConfirm(false),
+                ProtId::ReviewApprove(i64::MAX, usize::MAX),
+                ProtId::ReviewApprove(1, 0),
+                ProtId::ReviewApproveAll(i64::MAX),
+                ProtId::ReviewDenyRest(7),
+                ProtId::ReviewPage(i64::MAX, 3),
+                ProtId::ReviewPage(1, 0),
+            ]
+            .map(PanelId::Protection),
+        );
         all.extend(CATEGORIES.iter().map(|(c, _)| PanelId::Category(*c)));
         all.extend(ACTIONS.iter().map(|(a, _)| PanelId::Modal(*a, Some(big_u), Some(big_c))));
         for id in all {
@@ -509,7 +577,9 @@ mod tests {
         assert_eq!(PanelId::Action(Action::EndLockdown).encode(), "mp:a:unlock");
         assert_eq!(PanelId::Review(true, UserId::new(7)).encode(), "mp:rv:a:7");
         assert_eq!(PanelId::Review(false, UserId::new(7)).encode(), "mp:rv:d:7");
-        for junk in ["", "mp:", "mp:zz", "mp:m:kick:abc:-", "other:home", "mp:c:members:extra", "mp:m:kick:0:-", "mp:p:move:+5", "mp:g", "mp:g:o:zz", "mp:g:ds:2", "mp:g:vm:3", "mp:g:vr:2", "mp:g:qd:x", "mp:g:lh:nope", "mp:g:dt:ban:x", "mp:g:dt:note", "mp:rv:x:1", "mp:z", "mp:z:o:nope", "mp:z:e:words:2", "mp:z:e:words", "mp:z:f:zz", "mp:z:p:x", "mp:c:automod:x", "mp:rv:a:0", "mp:rv:a"] {
+        assert_eq!(PanelId::Protection(ProtId::ReviewApprove(12, 1)).encode(), "mp:pr:ra:12:1");
+        assert_eq!(PanelId::Protection(ProtId::RaidBulkConfirm(true)).encode(), "mp:pr:rc:1");
+        for junk in ["", "mp:", "mp:zz", "mp:m:kick:abc:-", "other:home", "mp:c:members:extra", "mp:m:kick:0:-", "mp:p:move:+5", "mp:g", "mp:g:o:zz", "mp:g:ds:2", "mp:g:vm:3", "mp:g:vr:2", "mp:g:qd:x", "mp:g:lh:nope", "mp:g:dt:ban:x", "mp:g:dt:note", "mp:rv:x:1", "mp:z", "mp:z:o:nope", "mp:z:e:words:2", "mp:z:e:words", "mp:z:f:zz", "mp:z:p:x", "mp:c:automod:x", "mp:rv:a:0", "mp:rv:a", "mp:pr", "mp:pr:re:x", "mp:pr:rb:2", "mp:pr:ra:1", "mp:pr:ra:01:0", "mp:pr:ra:1:-1", "mp:pr:rp:1:00", "mp:pr:aa:", "mp:pr:dr:+1", "mp:pr:aa:99999999999999999999"] {
             assert_eq!(PanelId::decode(junk), None, "{junk}");
         }
     }
