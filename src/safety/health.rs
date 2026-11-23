@@ -106,7 +106,7 @@ mod tests {
     fn render_all_good() {
         let e = f(render(vec![], vec![(Ok, "Mod roles".into(), "Mod".into())]));
         assert_eq!(e["title"], "🩺 Server health · all good");
-        assert_eq!(e["color"], 0x1abc9c);
+        assert_eq!(e["color"], 0xbaa3ff);
         assert_eq!(e["fields"][1]["name"], "Setup");
         assert_eq!(e["fields"][1]["value"], "✔ **Mod roles** Mod");
     }

@@ -362,7 +362,7 @@ mod tests {
         let e = &v["embeds"][0];
         assert_eq!(e["title"], "👋 Welcome! Verify to get in");
         assert_eq!(e["description"], "Press the button.");
-        assert_eq!(e["color"], 0x1abc9c);
+        assert_eq!(e["color"], 0xbaa3ff);
         let b = &v["components"][0]["components"][0];
         assert_eq!((b["custom_id"].as_str(), b["label"].as_str(), b["style"].as_u64()), (Some("mp:v"), Some("Verify"), Some(3)));
         assert_eq!(b["emoji"]["name"], "✅");

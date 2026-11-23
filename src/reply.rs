@@ -13,19 +13,15 @@ pub enum Tone {
 }
 
 impl Tone {
+    /// One colour for every bot embed (owner, 2026-11-23); tones kept so it can be split again.
     pub fn colour(self) -> u32 {
-        match self {
-            Tone::Members => 0xda373c,
-            Tone::NamesVoice | Tone::Channels => 0x5865f2,
-            Tone::Records => 0x4e5058,
-            Tone::Config => 0x949ba4,
-            Tone::Panel => 0xbaa3ff,
-            Tone::Safety => 0x1abc9c,
-        }
+        BAR
     }
 }
 
-const REFUSED: u32 = 0x949ba4;
+/// Owner's chosen bar colour, #BAA3FF.
+pub const BAR: u32 = 0xbaa3ff;
+const REFUSED: u32 = BAR;
 
 fn cut(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
@@ -68,13 +64,13 @@ mod tests {
 
     #[test]
     fn builders() {
-        assert_eq!(Tone::Members.colour(), 0xda373c);
+        assert_eq!(Tone::Members.colour(), 0xbaa3ff);
         assert_eq!(Tone::Panel.colour(), 0xbaa3ff);
-        assert_eq!(Tone::Safety.colour(), 0x1abc9c);
+        assert_eq!(Tone::Safety.colour(), 0xbaa3ff);
         let e = serde_json::to_value(refused("That member's highest role is at or above yours.", true)).unwrap();
         assert_eq!(e["title"], "Can't do that");
         assert_eq!(e["footer"]["text"], "Nothing was changed. No DM was sent.");
-        assert_eq!(e["color"], 0x949ba4);
+        assert_eq!(e["color"], 0xbaa3ff);
         let e = serde_json::to_value(refused("x", false)).unwrap();
         assert_eq!(e["footer"]["text"], "Nothing was changed.");
         let d = serde_json::to_value(done(Tone::Members, "👢 Kicked username", &[("Case", "#12".into()), ("Reason", "x".repeat(2000))], Some("Logged to #mod-log"))).unwrap();
