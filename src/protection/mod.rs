@@ -1,3 +1,4 @@
+pub mod logic;
 pub mod store;
 
 pub const EMOJI_PROTECTION: &str = "🚨";
