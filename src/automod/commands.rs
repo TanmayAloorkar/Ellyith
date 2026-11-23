@@ -11,6 +11,8 @@ use chrono::Duration;
 use poise::serenity_prelude::{CreateEmbed, GuildChannel, Role};
 
 const MAX_ENTRIES_SHOWN: usize = 10;
+/// Matches the panel select-menu limit.
+const MAX_IGNORED: usize = 25;
 
 fn user_err(s: String) -> Error { UserError(s).into() }
 
@@ -18,8 +20,27 @@ fn range(field: &str, v: i32, lo: i32, hi: i32) -> Result<i32, UserError> {
     if (lo..=hi).contains(&v) { Ok(v) } else { Err(UserError(format!("{field} must be between {lo} and {hi}."))) }
 }
 
+/// Which number settings a rule reads.
+pub fn settings_used(k: RuleKind) -> &'static [&'static str] {
+    match k {
+        RuleKind::BannedWords | RuleKind::Links | RuleKind::Invites | RuleKind::ScamLinks => &[],
+        RuleKind::FastMessages | RuleKind::FileSpam => &["threshold", "window"],
+        RuleKind::RepeatedMessages => &["threshold", "window", "percent"],
+        RuleKind::AllCaps | RuleKind::Zalgo => &["threshold", "percent"],
+        RuleKind::WallsOfText => &["threshold", "extra"],
+        RuleKind::MassMentions | RuleKind::EmojiSpam | RuleKind::SpoilerSpam => &["threshold"],
+    }
+}
+
 /// Applies the given fields to a copy of `c`, checking each.
 pub fn validate_settings(c: &RuleConfig, threshold: Option<i32>, window: Option<i32>, percent: Option<i32>, extra: Option<i32>) -> Result<RuleConfig, UserError> {
+    let used = settings_used(c.kind);
+    if used.is_empty() { return Err(UserError("This rule has no number settings.".into())); }
+    let given = [("threshold", threshold), ("window", window), ("percent", percent), ("extra", extra)];
+    if given.iter().all(|(_, v)| v.is_none()) { return Err(UserError("Nothing to change.".into())); }
+    if given.iter().any(|(n, v)| v.is_some() && !used.contains(n)) {
+        return Err(UserError(format!("{} uses: {}.", c.kind.label(), used.join(", "))));
+    }
     let mut n = c.clone();
     if let Some(v) = threshold {
         let (lo, hi, name) = match c.kind {
@@ -76,13 +97,17 @@ fn trigger_text(c: &RuleConfig, words: usize, sites: usize) -> Option<String> {
     })
 }
 
+/// "<summary> · <action>", whatever the on/off state.
+pub fn settings_text(c: &RuleConfig, words: usize, sites: usize) -> String {
+    match trigger_text(c, words, sites) {
+        Some(t) => format!("{t} · {}", action_text(c)),
+        None => action_text(c),
+    }
+}
+
 /// "On · <summary> · <action>" or "Off".
 pub fn rule_line(c: &RuleConfig, words: usize, sites: usize) -> String {
-    if !c.enabled { return "Off".into(); }
-    match trigger_text(c, words, sites) {
-        Some(t) => format!("On · {t} · {}", action_text(c)),
-        None => format!("On · {}", action_text(c)),
-    }
+    if c.enabled { format!("On · {}", settings_text(c, words, sites)) } else { "Off".into() }
 }
 
 fn describe(k: RuleKind) -> &'static str {
@@ -158,7 +183,12 @@ pub async fn set_enabled_core(inv: &Invoker<'_>, kind: RuleKind, on: bool) -> Re
     save(inv, &c).await?;
     let (words, sites) = counts(inv).await?;
     let t = format!("{} {} turned {}", kind.emoji(), kind.label(), if on { "on" } else { "off" });
-    Ok(reply::done(Tone::Config, &t, &[("Rule", rule_line(&c, words, sites))], None))
+    let footer = match (on, kind) {
+        (true, RuleKind::Links) if sites == 0 => Some("No sites are allowed yet, so every link will be removed."),
+        (true, RuleKind::BannedWords) if words == 0 => Some("No banned words yet — add some with /automod words add."),
+        _ => None,
+    };
+    Ok(reply::done(Tone::Config, &t, &[("Rule", rule_line(&c, words, sites))], footer))
 }
 
 pub async fn set_action_core(inv: &Invoker<'_>, kind: RuleKind, action: RuleAction, timeout: Option<Duration>) -> Result<CreateEmbed, Error> {
@@ -178,7 +208,7 @@ pub async fn set_settings_core(inv: &Invoker<'_>, kind: RuleKind, threshold: Opt
     let c = validate_settings(&one_rule(inv, kind).await?, threshold, window, percent, extra)?;
     save(inv, &c).await?;
     let (words, sites) = counts(inv).await?;
-    let now = rule_line(&RuleConfig { enabled: true, ..c }, words, sites);
+    let now = format!("{} ({})", settings_text(&c, words, sites), if c.enabled { "on" } else { "off" });
     Ok(reply::done(Tone::Config, &format!("{} {} settings saved", kind.emoji(), kind.label()), &[("Now", now)], None))
 }
 
@@ -192,7 +222,10 @@ pub async fn ignore_core(inv: &Invoker<'_>, kind: RuleKind, target: Target, add:
         Target::Channel(i) => (&mut c.ignored_channels, i, "channel", format!("<#{i}>")),
     };
     list.retain(|x| *x != id);
-    if add { list.push(id); }
+    if add {
+        if list.len() >= MAX_IGNORED { return Err(user_err(format!("At most {MAX_IGNORED} ignored {what}s per rule."))); }
+        list.push(id);
+    }
     save(inv, &c).await?;
     let t = format!("{} {} ignored {what}s updated", kind.emoji(), kind.label());
     Ok(reply::done(Tone::Config, &t, &[(if add { "Ignoring" } else { "No longer ignoring" }, shown)], None))
@@ -207,7 +240,7 @@ pub async fn words_add_core(inv: &Invoker<'_>, lines: &str) -> Result<CreateEmbe
         match parse_word_line(l) {
             Some(w) if w.kind == WordKind::Regex && compile_regex(&w.pattern).is_err() => invalid.push(l.to_string()),
             Some(w) => valid.push(w),
-            None => {}
+            None => invalid.push(l.to_string()),
         }
     }
     if valid.is_empty() && invalid.is_empty() { return Err(user_err("Give at least one word. Separate several with ;".into())); }
@@ -461,6 +494,24 @@ mod tests {
         let ok = validate_settings(&f, Some(8), Some(10), None, None).unwrap();
         assert_eq!((ok.threshold, ok.window_secs), (8, 10));
         assert_eq!(validate_settings(&d(RuleKind::Zalgo), Some(1), None, None, None).unwrap().threshold, 1);
+    }
+
+    #[test]
+    fn settings_only_for_used_fields() {
+        let r = d(RuleKind::RepeatedMessages);
+        assert_eq!(validate_settings(&r, None, None, None, None).unwrap_err().0, "Nothing to change.");
+        assert_eq!(validate_settings(&r, None, None, None, Some(5)).unwrap_err().0, "Repeated messages uses: threshold, window, percent.");
+        assert_eq!(validate_settings(&d(RuleKind::Links), Some(3), None, None, None).unwrap_err().0, "This rule has no number settings.");
+        assert!(validate_settings(&d(RuleKind::MassMentions), None, Some(5), None, None).is_err());
+        assert!(validate_settings(&d(RuleKind::FastMessages), None, None, Some(50), None).is_err());
+        assert!(validate_settings(&r, Some(4), None, Some(90), None).is_ok());
+    }
+
+    #[test]
+    fn settings_text_ignores_state() {
+        let c = d(RuleKind::FastMessages);
+        assert_eq!(settings_text(&c, 0, 0), "6 in 5s · timeout 10m");
+        assert_eq!(rule_line(&c, 0, 0), "Off");
     }
 
     #[test]
