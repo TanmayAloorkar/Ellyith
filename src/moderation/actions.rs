@@ -133,6 +133,11 @@ async fn send_dm(ctx: &serenity::Context, data: &Data, req: &ActionRequest, numb
 
 /// Callers have already run `authorize`. Creates no case if the Discord action fails.
 pub async fn execute(ctx: &serenity::Context, data: &Data, req: ActionRequest) -> Result<Option<Case>, Error> {
+    execute_with_dm(ctx, data, req, None).await
+}
+
+/// `execute`, with `dm` sent in place of the DM template (still only after the precheck passes).
+pub async fn execute_with_dm(ctx: &serenity::Context, data: &Data, req: ActionRequest, dm: Option<String>) -> Result<Option<Case>, Error> {
     // Validate before the DM so an unrepresentable duration never notifies the target.
     let unban_at = match req.kind {
         CaseKind::Tempban => Some(
@@ -150,7 +155,10 @@ pub async fn execute(ctx: &serenity::Context, data: &Data, req: ActionRequest) -
     if dm_kinds().contains(&req.kind) {
         let n = cases::reserve_number(&data.db, gid).await?;
         number = Some(n);
-        dm_failed = send_dm(ctx, data, &req, n).await?;
+        dm_failed = match dm {
+            Some(text) => req.target.direct_message(ctx, CreateMessage::new().content(text)).await.is_err(),
+            None => send_dm(ctx, data, &req, n).await?,
+        };
     }
 
     let audit = truncate(req.reason.as_deref().unwrap_or(""), 512);

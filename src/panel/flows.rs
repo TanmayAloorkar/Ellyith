@@ -9,6 +9,7 @@ use crate::moderation::commands::punish::punish;
 use crate::moderation::commands::voice::voice_action;
 use crate::moderation::perms::authorize;
 use crate::moderation::purge::{self, parse_amount};
+use crate::protection::logic::PunishSource;
 use crate::reply::{refused, Tone};
 use crate::safety::health::health_core;
 use crate::safety::lockdown::{end_core, require_manage_channels, start_core};
@@ -109,16 +110,16 @@ async fn exec(inv: &Invoker<'_>, a: Action, user: Option<UserId>, chan: Option<C
         voice_action(inv, member()?, kind, chan, reason(0)).await
     };
     match a {
-        Action::Warn => punish(inv, CaseKind::Warn, member()?, reason(0), None, 0).await,
-        Action::Untimeout => punish(inv, CaseKind::Untimeout, member()?, reason(0), None, 0).await,
-        Action::Kick => punish(inv, CaseKind::Kick, member()?, reason(0), None, 0).await,
-        Action::Timeout => punish(inv, CaseKind::Timeout, member()?, reason(1), Some(parse_duration(val(0))?), 0).await,
+        Action::Warn => punish(inv, PunishSource::Command, CaseKind::Warn, member()?, reason(0), None, 0).await,
+        Action::Untimeout => punish(inv, PunishSource::Command, CaseKind::Untimeout, member()?, reason(0), None, 0).await,
+        Action::Kick => punish(inv, PunishSource::Command, CaseKind::Kick, member()?, reason(0), None, 0).await,
+        Action::Timeout => punish(inv, PunishSource::Command, CaseKind::Timeout, member()?, reason(1), Some(parse_duration(val(0))?), 0).await,
         Action::Tempban => {
             let (d, days) = (parse_duration(val(0))?, parse_delete_days(val(1))?);
-            punish(inv, CaseKind::Tempban, member()?, reason(2), Some(d), days).await
+            punish(inv, PunishSource::Command, CaseKind::Tempban, member()?, reason(2), Some(d), days).await
         }
-        Action::Ban => punish(inv, CaseKind::Ban, member()?, reason(1), None, parse_delete_days(val(0))?).await,
-        Action::Unban => punish(inv, CaseKind::Unban, parse_user_id(val(0))?, reason(1), None, 0).await,
+        Action::Ban => punish(inv, PunishSource::Command, CaseKind::Ban, member()?, reason(1), None, parse_delete_days(val(0))?).await,
+        Action::Unban => punish(inv, PunishSource::Command, CaseKind::Unban, parse_user_id(val(0))?, reason(1), None, 0).await,
         Action::NickSet => {
             if val(0).is_empty() {
                 return Err(bad("Enter a nickname.").into());
@@ -265,9 +266,14 @@ async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIntera
             let inv = Invoker::from_interaction(ctx, data, ci.guild_id.expect("checked in handle"), &ci.user);
             show(super::automod::category(&inv).await)
         }
+        PanelId::Category(Category::Protection) => {
+            let inv = Invoker::from_interaction(ctx, data, ci.guild_id.expect("checked in handle"), &ci.user);
+            show(super::protection::category(&inv).await)
+        }
         PanelId::Category(c) => show(view::category(c)),
         PanelId::AutoMod(a) => return super::automod::on_component(ctx, data, ci, a).await,
         PanelId::Config(c) => return super::config::on_component(ctx, data, ci, c).await,
+        PanelId::Protection(p) => return super::protection::on_component(ctx, data, ci, p).await,
         PanelId::Review(approve, user) => return on_review(ctx, data, ci, approve, user).await,
         PanelId::Verify => return verify::on_press(ctx, data, ci).await,
         PanelId::ReviewPick => return on_review_pick(ctx, data, ci).await,
@@ -470,6 +476,9 @@ async fn on_modal(ctx: &serenity::Context, data: &Data, mi: &ModalInteraction) -
     }
     if let Some(PanelId::AutoMod(a)) = decoded {
         return super::automod::on_modal(ctx, data, mi, a).await;
+    }
+    if let Some(PanelId::Protection(p)) = decoded {
+        return super::protection::on_modal(ctx, data, mi, p).await;
     }
     if decoded == Some(PanelId::VerifyQuiz) {
         return verify::on_submit(ctx, data, mi).await;

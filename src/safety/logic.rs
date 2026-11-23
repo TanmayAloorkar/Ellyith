@@ -126,6 +126,8 @@ pub struct HealthInput {
     pub verify_on_without_quarantine: bool,
     pub lockdown_channels_empty: bool,
     pub bot_missing: Vec<&'static str>,
+    /// Anti-nuke is on and some role sits above the bot's top role.
+    pub bot_not_top: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,6 +164,9 @@ pub fn health_lines(h: &HealthInput) -> (Vec<HealthLine>, Vec<HealthLine>) {
     }
     if !h.bot_missing.is_empty() {
         probs.push((Bad, "Bot is missing permissions".into(), h.bot_missing.join(", ")));
+    }
+    if h.bot_not_top {
+        probs.push((Warn, "Bot role is not at the top of the role list (anti-nuke can't stop people above it)".into(), "Drag the bot's role to the top in server settings.".into()));
     }
 
     let line = |bad: bool, title: &str, good: &str, fix: &str| {
@@ -307,7 +312,18 @@ mod tests {
             verify_on_without_quarantine: false,
             lockdown_channels_empty: false,
             bot_missing: vec![],
+            bot_not_top: false,
         }
+    }
+
+    #[test]
+    fn health_line_when_bot_not_top() {
+        let mut h = good();
+        h.bot_not_top = true;
+        let (probs, _) = health_lines(&h);
+        assert_eq!(probs.len(), 1);
+        assert_eq!(probs[0].0, Health::Warn);
+        assert_eq!(probs[0].1, "Bot role is not at the top of the role list (anti-nuke can't stop people above it)");
     }
 
     #[test]

@@ -2,6 +2,7 @@ use crate::automod::engine;
 use crate::moderation::jobs::{self, JobKind};
 use crate::logging::{audit, messages};
 use crate::moderation::nickname;
+use crate::protection::{antinuke, invites, join};
 use crate::safety::quarantine;
 use crate::{Data, Error};
 use poise::serenity_prelude as serenity;
@@ -22,11 +23,20 @@ pub async fn event_handler(
     // Enforcement failures are logged, never propagated out of the handler.
     match event {
         serenity::FullEvent::GuildMemberAddition { new_member } => {
+            // Raid, gate and alt run first; a member they quarantined, kicked or banned skips verification.
             // A member just quarantined skips the nickname filter.
-            if !quarantine::on_member_join(ctx, data, new_member).await {
+            if !join::on_join(ctx, data, new_member).await && !quarantine::on_member_join(ctx, data, new_member).await {
                 check_member(ctx, data, new_member).await;
             }
             audit::on_join(ctx, data, new_member).await
+        }
+        serenity::FullEvent::GuildCreate { guild, .. } if guild.id == data.home_guild => {
+            data.protection.invites.load(ctx, guild.id).await
+        }
+        serenity::FullEvent::InviteCreate { data: ev } => invites::on_invite_create(data, ev),
+        serenity::FullEvent::InviteDelete { data: ev } => invites::on_invite_delete(data, ev),
+        serenity::FullEvent::GuildBanAddition { guild_id, banned_user } => {
+            invites::on_ban(ctx, data, *guild_id, banned_user).await
         }
         serenity::FullEvent::ChannelCreate { channel } => quarantine::on_channel_create(ctx, data, channel).await,
         serenity::FullEvent::GuildMemberRemoval { guild_id, user, member_data_if_available } => {
@@ -34,7 +44,8 @@ pub async fn event_handler(
         }
         serenity::FullEvent::VoiceStateUpdate { old, new } => audit::on_voice(ctx, data, old.as_ref(), new).await,
         serenity::FullEvent::GuildAuditLogEntryCreate { entry, guild_id } => {
-            audit::on_entry(ctx, data, *guild_id, entry).await
+            audit::on_entry(ctx, data, *guild_id, entry).await;
+            antinuke::on_entry(ctx, data, *guild_id, entry).await
         }
         serenity::FullEvent::GuildMemberUpdate { old_if_available, new, event } => {
             let now = event.nick.as_deref().or(event.user.global_name.as_deref()).unwrap_or(&event.user.name);

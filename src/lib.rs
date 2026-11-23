@@ -10,6 +10,7 @@ pub mod reply;
 pub mod panel;
 pub mod safety;
 pub mod automod;
+pub mod protection;
 
 #[derive(Clone)]
 pub struct Data {
@@ -17,6 +18,7 @@ pub struct Data {
     pub home_guild: poise::serenity_prelude::GuildId,
     pub msg_cache: std::sync::Arc<logging::cache::MessageCache>,
     pub automod: std::sync::Arc<automod::engine::AutoMod>,
+    pub protection: std::sync::Arc<protection::Runtime>,
 }
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Context<'a> = poise::Context<'a, Data, Error>;
@@ -35,7 +37,7 @@ impl std::error::Error for UserError {}
 pub fn all_commands() -> Vec<poise::Command<Data, Error>> {
     {
         use moderation::commands::{cases, punish::*};
-        vec![ping(), moderation::commands::config::config(), warn(), timeout(), untimeout(), kick(), ban(), tempban(), unban(), cases::case(), cases::history(), cases::note(), cases::mywarnings(), moderation::commands::nick::nick(), moderation::commands::voice::voice(), moderation::commands::purge::purge(), safety::commands::quarantine(), safety::lockdown::lockdown(), automod::commands::automod(), healthcheck()]
+        vec![ping(), moderation::commands::config::config(), warn(), timeout(), untimeout(), kick(), ban(), tempban(), unban(), cases::case(), cases::history(), cases::note(), cases::mywarnings(), moderation::commands::nick::nick(), moderation::commands::voice::voice(), moderation::commands::purge::purge(), safety::commands::quarantine(), safety::lockdown::lockdown(), automod::commands::automod(), protection::commands::raid(), protection::commands::alts(), protection::commands::newaccounts(), protection::commands::antinuke(), healthcheck()]
     }
 }
 
@@ -63,6 +65,13 @@ mod tests {
     #[test]
     fn registers_automod() {
         assert!(super::all_commands().iter().any(|c| c.name == "automod"));
+    }
+
+    #[test]
+    fn registers_protection() {
+        for n in ["raid", "alts", "newaccounts", "antinuke"] {
+            assert!(super::all_commands().iter().any(|c| c.name == n), "{n}");
+        }
     }
 
     #[test]

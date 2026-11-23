@@ -57,7 +57,7 @@ fn join_lines(s: &str) -> String {
     s.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(";")
 }
 
-fn parse_num(s: &str, what: &str) -> Result<i32, UserError> {
+pub(super) fn parse_num(s: &str, what: &str) -> Result<i32, UserError> {
     s.trim().parse().map_err(|_| UserError(format!("{what} must be a whole number.")))
 }
 
@@ -110,7 +110,7 @@ fn settings_args(kind: RuleKind, v: &[String]) -> Result<[Option<i32>; 4], UserE
 
 // ---- pages ----
 
-fn input(style: InputTextStyle, label: &str, idx: usize, value: Option<String>) -> CreateActionRow {
+pub(super) fn input(style: InputTextStyle, label: &str, idx: usize, value: Option<String>) -> CreateActionRow {
     let mut t = CreateInputText::new(style, label, idx.to_string()).required(true);
     if let Some(v) = value {
         t = t.value(v);
@@ -206,15 +206,21 @@ async fn page_for(inv: &Invoker<'_>, kind: RuleKind) -> Views {
 
 // ---- interactions ----
 
-fn edit_with(embed: CreateEmbed) -> EditInteractionResponse {
-    EditInteractionResponse::new().embed(embed).components(vec![back_row()]).allowed_mentions(CreateAllowedMentions::new())
+fn edit_with(embed: CreateEmbed, back: CreateActionRow) -> EditInteractionResponse {
+    EditInteractionResponse::new().embed(embed).components(vec![back]).allowed_mentions(CreateAllowedMentions::new())
 }
 
-/// Acknowledge first (the save hits the database), run it, show the result.
-async fn finish(ctx: &serenity::Context, ci: &ComponentInteraction, what: AutoId, work: impl Future<Output = Result<CreateEmbed, Error>>) -> Result<(), Error> {
+/// Acknowledge first (the save hits the database), run it, show the result above `back`.
+pub(super) async fn finish(
+    ctx: &serenity::Context,
+    ci: &ComponentInteraction,
+    what: impl std::fmt::Debug,
+    work: impl Future<Output = Result<CreateEmbed, Error>>,
+    back: CreateActionRow,
+) -> Result<(), Error> {
     ci.create_response(&ctx.http, CreateInteractionResponse::Acknowledge).await?;
     let embed = outcome_of(what, false, work.await);
-    ci.edit_response(&ctx.http, edit_with(embed)).await?;
+    ci.edit_response(&ctx.http, edit_with(embed, back)).await?;
     Ok(())
 }
 
@@ -250,18 +256,18 @@ pub async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIn
                 let m = require_manage_server(&inv).await.map(|_| timeout_modal(k));
                 open_modal(ctx, ci, aid, m, in_ephemeral).await?;
             } else {
-                finish(ctx, ci, aid, core::set_action_core(&inv, k, a, None)).await?;
+                finish(ctx, ci, aid, core::set_action_core(&inv, k, a, None), back_row()).await?;
             }
         }
         AutoId::Roles(k) => {
             let ComponentInteractionDataKind::RoleSelect { values } = &ci.data.kind else { return stale(ctx, ci).await };
-            finish(ctx, ci, aid, core::ignore_set_core(&inv, k, Targets::Roles(values.iter().map(|r| r.get() as i64).collect()))).await?;
+            finish(ctx, ci, aid, core::ignore_set_core(&inv, k, Targets::Roles(values.iter().map(|r| r.get() as i64).collect())), back_row()).await?;
         }
         AutoId::Chans(k) => {
             let ComponentInteractionDataKind::ChannelSelect { values } = &ci.data.kind else { return stale(ctx, ci).await };
-            finish(ctx, ci, aid, core::ignore_set_core(&inv, k, Targets::Channels(values.iter().map(|c| c.get() as i64).collect()))).await?;
+            finish(ctx, ci, aid, core::ignore_set_core(&inv, k, Targets::Channels(values.iter().map(|c| c.get() as i64).collect())), back_row()).await?;
         }
-        AutoId::Toggle(k, on) => finish(ctx, ci, aid, core::set_enabled_core(&inv, k, on)).await?,
+        AutoId::Toggle(k, on) => finish(ctx, ci, aid, core::set_enabled_core(&inv, k, on), back_row()).await?,
         AutoId::Settings(k) => {
             let m = current(&inv, k).await.map(|c| settings_modal(&c));
             open_modal(ctx, ci, aid, m, in_ephemeral).await?;
@@ -299,7 +305,7 @@ pub async fn on_modal(ctx: &serenity::Context, data: &Data, mi: &ModalInteractio
     mi.create_response(&ctx.http, CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new().ephemeral(true))).await?;
     let inv = Invoker::from_interaction(ctx, data, mi.guild_id.expect("checked in handle"), &mi.user);
     let embed = outcome_of(aid, false, submit(&inv, aid, &modal_values(mi)).await);
-    mi.edit_response(&ctx.http, edit_with(embed)).await?;
+    mi.edit_response(&ctx.http, edit_with(embed, back_row())).await?;
     Ok(())
 }
 

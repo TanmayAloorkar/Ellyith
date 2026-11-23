@@ -46,6 +46,7 @@ pub async fn health_core(inv: &Invoker<'_>) -> Result<CreateEmbed, Error> {
     let mod_ids = settings::get_or_create(&inv.data.db, gid).await?.mod_roles;
     let logs = logging::list(&inv.data.db, gid).await?;
     let s = store::get_settings(&inv.data.db, gid).await?;
+    let nuke_on = crate::protection::store::get_settings(&inv.data.db, gid).await?.nuke_enabled;
     let bot_id = inv.ctx.cache.current_user().id;
 
     // Copy everything out of the cache guard before any await.
@@ -86,6 +87,7 @@ pub async fn health_core(inv: &Invoker<'_>) -> Result<CreateEmbed, Error> {
             verify_on_without_quarantine: s.verify_mode != "off" && require_setup(&s, &g).is_err(),
             lockdown_channels_empty: s.lockdown_channels.is_empty(),
             bot_missing,
+            bot_not_top: nuke_on && g.roles.values().any(|r| r.position > top),
         }
     };
     h.unset_logs = LogCategory::ALL.into_iter().filter(|c| !logs.iter().any(|(l, _)| l == c)).map(LogCategory::as_str).collect();

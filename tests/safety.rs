@@ -71,3 +71,20 @@ async fn lockdown_clear_one_channel(pool: PgPool) {
     lockdown_clear_channel(&pool, 1, 100).await.unwrap();
     assert_eq!(lockdown_load(&pool, 1).await.unwrap(), vec![(101, true, ows)]);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn quarantine_gate_reason_and_switch(pool: PgPool) {
+    let mut row = qrow(1, 5);
+    row.reason = "gate".into();
+    assert!(quarantine_insert(&pool, &row).await.unwrap());
+    assert_eq!(quarantine_get(&pool, 1, 5).await.unwrap().unwrap().reason, "gate");
+    row.user_id = 6;
+    row.reason = "verification".into();
+    quarantine_insert(&pool, &row).await.unwrap();
+    assert!(!quarantine_set_reason(&pool, 1, 5, "verification", "raid").await.unwrap());
+    assert!(quarantine_set_reason(&pool, 1, 6, "verification", "raid").await.unwrap());
+    assert_eq!(quarantine_get(&pool, 1, 6).await.unwrap().unwrap().reason, "raid");
+    row.user_id = 7;
+    row.reason = "bogus".into();
+    assert!(quarantine_insert(&pool, &row).await.is_err());
+}
