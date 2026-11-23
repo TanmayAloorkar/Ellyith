@@ -2,14 +2,19 @@
 
 /// Lowercase, map look-alikes (`1`/`|`→i, 0→o, 3→e, 4→a, 5→s, 7→t, @→a, $→s; `l` stays),
 /// drop everything that is not a letter/digit (spaces, punctuation, zero-width), collapse runs.
+/// Look-alike map used by `fold` and the banned-word matcher.
+pub fn lookalike(c: char) -> char {
+    match c {
+        '0' => 'o', '1' | '|' => 'i', '3' => 'e', '4' | '@' => 'a', '5' | '$' => 's', '7' => 't',
+        c => c,
+    }
+}
+
 pub fn fold(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars().flat_map(char::to_lowercase) {
-        let c = match c {
-            '0' => 'o', '1' | '|' => 'i', '3' => 'e', '4' | '@' => 'a', '5' | '$' => 's', '7' => 't',
-            c if c.is_alphanumeric() => c,
-            _ => continue,
-        };
+        let c = lookalike(c);
+        if !c.is_alphanumeric() { continue; }
         if !out.ends_with(c) { out.push(c); }
     }
     out
