@@ -39,9 +39,9 @@ Upload `target/aarch64-unknown-linux-musl/release/aio-bot` in place of the old b
 
 In the Discord developer portal, Bot tab, keep "Public Bot" OFF so the bot cannot be added to other servers, and enable the privileged intents Server Members and Message Content.
 
-Invite the bot with the permission integer 1099666910342. It covers: View Channels, Send Messages, Embed Links, Read Message History, Manage Messages, View Audit Log, Manage Nicknames, Kick Members, Ban Members, Moderate Members, Move Members, Mute Members. Invite URL form:
+Invite the bot with the permission integer 1099935345814. It covers: View Channels, Send Messages, Embed Links, Read Message History, Manage Messages, View Audit Log, Manage Nicknames, Kick Members, Ban Members, Moderate Members, Move Members, Mute Members, Manage Roles, Manage Channels. Invite URL form:
 
-    https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot%20applications.commands&permissions=1099666910342
+    https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot%20applications.commands&permissions=1099935345814
 
 After the invite, open Server Settings, Roles, and drag the bot's role above the highest role of each member it must moderate. Discord blocks kicks, bans, timeouts and nickname changes on members whose top role is at or above the bot's.
 

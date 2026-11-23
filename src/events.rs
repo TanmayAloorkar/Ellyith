@@ -1,6 +1,7 @@
 use crate::moderation::jobs::{self, JobKind};
 use crate::logging::{audit, messages};
 use crate::moderation::nickname;
+use crate::safety::quarantine;
 use crate::{Data, Error};
 use poise::serenity_prelude as serenity;
 
@@ -20,9 +21,13 @@ pub async fn event_handler(
     // Enforcement failures are logged, never propagated out of the handler.
     match event {
         serenity::FullEvent::GuildMemberAddition { new_member } => {
-            check_member(ctx, data, new_member).await;
+            // A member just quarantined skips the nickname filter.
+            if !quarantine::on_member_join(ctx, data, new_member).await {
+                check_member(ctx, data, new_member).await;
+            }
             audit::on_join(ctx, data, new_member).await
         }
+        serenity::FullEvent::ChannelCreate { channel } => quarantine::on_channel_create(ctx, data, channel).await,
         serenity::FullEvent::GuildMemberRemoval { guild_id, user, member_data_if_available } => {
             audit::on_leave(ctx, data, *guild_id, user, member_data_if_available.as_ref()).await
         }

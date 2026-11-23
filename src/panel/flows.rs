@@ -7,13 +7,19 @@ use crate::moderation::commands::cases::{case_reason_core, case_remove_core, cas
 use crate::moderation::commands::nick::set_nick;
 use crate::moderation::commands::punish::punish;
 use crate::moderation::commands::voice::voice_action;
+use crate::moderation::perms::authorize;
 use crate::moderation::purge::{self, parse_amount};
 use crate::reply::{refused, Tone};
+use crate::safety::health::health_core;
+use crate::safety::lockdown::{end_core, require_manage_channels, start_core};
+use crate::safety::quarantine::{card_for, deny, handled_card, list_core, quarantine_core, release_core};
+use crate::safety::store;
+use crate::safety::verify;
 use crate::{Data, Error, UserError};
 use poise::serenity_prelude::{
     self as serenity, ActionRowComponent, ChannelId, ChannelType, ComponentInteraction, ComponentInteractionDataKind, CreateActionRow, CreateAllowedMentions,
-    CreateEmbed, CreateInputText, CreateInteractionResponse, CreateInteractionResponseMessage, CreateModal, CreateSelectMenu, CreateSelectMenuKind,
-    EditInteractionResponse, InputTextStyle, MessageFlags, ModalInteraction, UserId,
+    CreateEmbed, CreateSelectMenuOption, CreateInputText, CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateModal, CreateSelectMenu, CreateSelectMenuKind,
+    EditInteractionResponse, EditMessage, InputTextStyle, MessageFlags, ModalInteraction, Permissions, UserId,
 };
 
 pub(super) const STALE: &str = "This panel is out of date — ask an admin to run /config panel again.";
@@ -48,6 +54,8 @@ fn parse_delete_days(s: &str) -> Result<u8, UserError> {
     s.parse::<u8>().ok().filter(|n| *n <= 7).ok_or_else(|| bad("Delete days must be a whole number from 0 to 7."))
 }
 
+const LOCKDOWN_MESSAGE: &str = "Message in each locked channel (optional)";
+
 /// Pop-up inputs for an action as (label, required), in order. Empty: no pop-up.
 fn modal_inputs(a: Action) -> Vec<(&'static str, bool)> {
     const REASON: (&str, bool) = ("Reason", false);
@@ -67,12 +75,24 @@ fn modal_inputs(a: Action) -> Vec<(&'static str, bool)> {
         Action::CaseReason => vec![("Case number", true), ("New reason", true)],
         Action::NoteAdd => vec![("Note", true)],
         Action::NoteView | Action::NoteDelete => vec![("Note ID", true)],
+        Action::Quarantine => vec![("Reason", true)],
+        Action::Lockdown => vec![(LOCKDOWN_MESSAGE, false), REASON],
+        Action::Release | Action::WaitingReview | Action::HealthCheck | Action::EndLockdown => vec![],
     }
 }
 
 /// Actions that start with a member select.
 fn needs_member(a: Action) -> bool {
-    !matches!(a, Action::Unban | Action::Purge | Action::CaseView | Action::CaseReason | Action::CaseRemove | Action::NoteView | Action::NoteDelete)
+    !matches!(
+        a,
+        Action::Unban | Action::Purge | Action::CaseView | Action::CaseReason | Action::CaseRemove | Action::NoteView | Action::NoteDelete | Action::WaitingReview | Action::HealthCheck | Action::Lockdown | Action::EndLockdown
+    )
+}
+
+/// Actions with no pop-up and no member: the button runs them.
+#[cfg(test)]
+fn direct(a: Action) -> bool {
+    matches!(a, Action::WaitingReview | Action::HealthCheck | Action::EndLockdown)
 }
 
 // ---- running an action ----
@@ -124,11 +144,18 @@ async fn exec(inv: &Invoker<'_>, a: Action, user: Option<UserId>, chan: Option<C
         Action::CaseRemove => case_remove_core(inv, parse_case_number(val(0))?).await,
         Action::NoteView => note_view_core(inv, parse_note_id(val(0))?).await,
         Action::NoteDelete => note_remove_core(inv, parse_note_id(val(0))?).await,
+        Action::Quarantine => quarantine_core(inv, member()?, val(0).to_string()).await,
+        Action::Release => release_core(inv, member()?).await,
+        Action::WaitingReview => list_core(inv).await,
+        Action::HealthCheck => health_core(inv).await,
+        Action::EndLockdown => end_core(inv).await,
+        // An empty message box means post nothing.
+        Action::Lockdown => start_core(inv, Some(val(0).to_string()).filter(|s| !s.is_empty()), reason(1)).await,
     }
 }
 
 /// Same wording as the slash-command error handler: refusals are shown, anything else is logged.
-pub(super) fn outcome_of(what: impl std::fmt::Debug, dm: bool, res: Result<CreateEmbed, Error>) -> CreateEmbed {
+pub(crate) fn outcome_of(what: impl std::fmt::Debug, dm: bool, res: Result<CreateEmbed, Error>) -> CreateEmbed {
     match res {
         Ok(e) => e,
         Err(e) => match e.downcast_ref::<UserError>() {
@@ -147,7 +174,7 @@ fn outcome(a: Action, res: Result<CreateEmbed, Error>) -> CreateEmbed {
 
 // ---- response builders ----
 
-pub(super) fn msg(embed: CreateEmbed, rows: Vec<CreateActionRow>) -> CreateInteractionResponseMessage {
+pub(crate) fn msg(embed: CreateEmbed, rows: Vec<CreateActionRow>) -> CreateInteractionResponseMessage {
     CreateInteractionResponseMessage::new().embed(embed).components(rows).allowed_mentions(CreateAllowedMentions::new())
 }
 
@@ -165,19 +192,32 @@ fn channel_menu(id: PanelId, types: Vec<ChannelType>, placeholder: &str) -> Crea
 }
 
 fn modal_for(a: Action, user: Option<UserId>, chan: Option<ChannelId>) -> Option<CreateModal> {
+    modal_with(a, user, chan, None, None)
+}
+
+fn lockdown_title(n: usize) -> String {
+    format!("Start lockdown ({n} channels)")
+}
+
+/// `title` replaces the button label; `prefill` fills the first input.
+fn modal_with(a: Action, user: Option<UserId>, chan: Option<ChannelId>, title: Option<String>, prefill: Option<&str>) -> Option<CreateModal> {
     let inputs = modal_inputs(a);
     if inputs.is_empty() {
         return None;
     }
     let label = view::action_label(a);
-    let title: String = label.split_once(' ').map_or(label, |(_, t)| t).chars().take(45).collect();
+    let title: String = title.unwrap_or_else(|| label.split_once(' ').map_or(label, |(_, t)| t).to_string());
+    let title: String = title.chars().take(45).collect();
     let rows = inputs
         .into_iter()
         .enumerate()
         .map(|(i, (label, required))| {
-            let long = matches!(label, "Reason" | "New reason" | "Note");
+            let long = matches!(label, "Reason" | "New reason" | "Note" | LOCKDOWN_MESSAGE);
             let style = if long { InputTextStyle::Paragraph } else { InputTextStyle::Short };
             let mut t = CreateInputText::new(style, label, i.to_string()).required(required);
+            if let (0, Some(p)) = (i, prefill) {
+                t = t.value(p);
+            }
             if long {
                 t = t.max_length(1000);
             } else if label == "Nickname" {
@@ -189,6 +229,11 @@ fn modal_for(a: Action, user: Option<UserId>, chan: Option<ChannelId>) -> Option
         })
         .collect();
     Some(CreateModal::new(PanelId::Modal(a, user, chan).encode(), title).components(rows))
+}
+
+/// Ids any home-guild member may press (no staff check); every other `mp:` id is staff-gated by its core.
+pub fn is_public_id(id: &str) -> bool {
+    matches!(id, "mp:v" | "mp:vq")
 }
 
 // ---- entry point ----
@@ -218,6 +263,36 @@ async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIntera
         }
         PanelId::Category(c) => show(view::category(c)),
         PanelId::Config(c) => return super::config::on_component(ctx, data, ci, c).await,
+        PanelId::Review(approve, user) => return on_review(ctx, data, ci, approve, user).await,
+        PanelId::Verify => return verify::on_press(ctx, data, ci).await,
+        PanelId::ReviewPick => return on_review_pick(ctx, data, ci).await,
+        PanelId::Action(Action::WaitingReview) => {
+            // Permission check and DB reads can pass 3 s: defer in the same shape `show` would answer in.
+            let defer = if in_ephemeral {
+                CreateInteractionResponse::Acknowledge
+            } else {
+                CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new().ephemeral(true))
+            };
+            ci.create_response(&ctx.http, defer).await?;
+            let inv = Invoker::from_interaction(ctx, data, ci.guild_id.expect("checked in handle"), &ci.user);
+            let (e, rows) = waiting_review(&inv, ctx).await;
+            ci.edit_response(&ctx.http, EditInteractionResponse::new().embed(e).components(rows).allowed_mentions(CreateAllowedMentions::new())).await?;
+            return Ok(());
+        }
+        PanelId::Action(Action::Lockdown) => {
+            let inv = Invoker::from_interaction(ctx, data, ci.guild_id.expect("checked in handle"), &ci.user);
+            let s = store::get_settings(&data.db, data.home_guild.get() as i64).await?;
+            if let Err(e) = require_manage_channels(&inv).await {
+                show((outcome(Action::Lockdown, Err(e)), vec![view::back_row()]))
+            } else if s.lockdown_channels.is_empty() {
+                show((refused("No lockdown channels are set. Add them in Config → Lockdown.", false), vec![view::back_row()]))
+            } else {
+                let m = modal_with(Action::Lockdown, None, None, Some(lockdown_title(s.lockdown_channels.len())), Some(&s.lockdown_message)).expect("lockdown has inputs");
+                ci.create_response(&ctx.http, CreateInteractionResponse::Modal(m)).await?;
+                return Ok(());
+            }
+        }
+        PanelId::Action(a @ (Action::HealthCheck | Action::EndLockdown)) => return run_deferred(ctx, data, ci, a, None).await,
         PanelId::Action(Action::Purge) => prompt(
             Action::Purge,
             "which channel?",
@@ -237,13 +312,7 @@ async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIntera
                     "to which channel?",
                     channel_menu(PanelId::PickChannel(Action::Move, Some(user)), vec![ChannelType::Voice, ChannelType::Stage], "Choose a voice channel"),
                 ),
-                Action::History | Action::NoteList => {
-                    ci.create_response(&ctx.http, CreateInteractionResponse::Acknowledge).await?;
-                    let inv = Invoker::from_interaction(ctx, data, ci.guild_id.expect("checked in handle"), &ci.user);
-                    let embed = outcome(a, exec(&inv, a, Some(user), None, &[]).await);
-                    ci.edit_response(&ctx.http, result_edit(embed)).await?;
-                    return Ok(());
-                }
+                Action::History | Action::NoteList | Action::Release => return run_deferred(ctx, data, ci, a, Some(user)).await,
                 _ => return open_modal(ctx, ci, a, Some(user), None).await,
             }
         }
@@ -252,9 +321,105 @@ async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIntera
             let Some(&chan) = values.first() else { return stale(ctx, ci).await };
             return open_modal(ctx, ci, a, user, Some(chan)).await;
         }
-        PanelId::Modal(..) => return stale(ctx, ci).await,
+        PanelId::Modal(..) | PanelId::VerifyQuiz => return stale(ctx, ci).await,
     };
     ci.create_response(&ctx.http, reply).await?;
+    Ok(())
+}
+
+/// Defer, run `a`, and show the result in place of the clicked message.
+async fn run_deferred(ctx: &serenity::Context, data: &Data, ci: &ComponentInteraction, a: Action, user: Option<UserId>) -> Result<(), Error> {
+    ci.create_response(&ctx.http, CreateInteractionResponse::Acknowledge).await?;
+    let inv = Invoker::from_interaction(ctx, data, ci.guild_id.expect("checked in handle"), &ci.user);
+    let embed = outcome(a, exec(&inv, a, user, None, &[]).await);
+    ci.edit_response(&ctx.http, result_edit(embed)).await?;
+    Ok(())
+}
+
+/// Waiting-review list plus a select of up to 25 quarantined members. Empty list: embed and Back only.
+async fn waiting_review(inv: &Invoker<'_>, ctx: &serenity::Context) -> (CreateEmbed, Vec<CreateActionRow>) {
+    let res = async {
+        let embed = list_core(inv).await?;
+        let rows = store::quarantine_list(&inv.data.db, inv.guild_id.get() as i64).await?;
+        Ok::<_, Error>((embed, rows))
+    }
+    .await;
+    let (embed, rows) = match res {
+        Ok(v) => v,
+        Err(e) => return (outcome(Action::WaitingReview, Err(e)), vec![view::back_row()]),
+    };
+    let options: Vec<CreateSelectMenuOption> = rows
+        .iter()
+        .take(25)
+        .map(|r| {
+            let id = UserId::new(r.user_id as u64);
+            let name = ctx.cache.guild(inv.guild_id).and_then(|g| g.members.get(&id).map(|m| m.user.name.clone())).unwrap_or_else(|| r.user_id.to_string());
+            CreateSelectMenuOption::new(name, r.user_id.to_string())
+        })
+        .collect();
+    if options.is_empty() {
+        return (embed, vec![view::back_row()]);
+    }
+    let menu = CreateSelectMenu::new(PanelId::ReviewPick.encode(), CreateSelectMenuKind::String { options }).placeholder("Open a review card");
+    (embed, vec![CreateActionRow::SelectMenu(menu), view::back_row()])
+}
+
+/// A member picked in Waiting review: show their review card, ephemeral, with Approve / Deny.
+async fn on_review_pick(ctx: &serenity::Context, data: &Data, ci: &ComponentInteraction) -> Result<(), Error> {
+    let ComponentInteractionDataKind::StringSelect { values } = &ci.data.kind else { return stale(ctx, ci).await };
+    let Some(user) = values.first().and_then(|v| parse_user_id(v).ok()) else { return stale(ctx, ci).await };
+    ci.create_response(&ctx.http, CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new().ephemeral(true))).await?;
+    let inv = Invoker::from_interaction(ctx, data, ci.guild_id.expect("checked in handle"), &ci.user);
+    let res = async {
+        authorize(&inv, Permissions::MODERATE_MEMBERS, None).await?;
+        let Some(row) = store::quarantine_get(&data.db, inv.guild_id.get() as i64, user.get() as i64).await? else {
+            return Err(UserError("Already handled.".into()).into());
+        };
+        card_for(ctx, data, inv.guild_id, &row).await
+    }
+    .await;
+    let followup = match res {
+        Ok((embed, rows)) => CreateInteractionResponseFollowup::new().embed(embed).components(rows),
+        Err(e) => CreateInteractionResponseFollowup::new().embed(outcome_of(PanelId::ReviewPick, false, Err(e))),
+    };
+    ci.create_followup(&ctx.http, followup.ephemeral(true).allowed_mentions(CreateAllowedMentions::new())).await?;
+    Ok(())
+}
+
+/// Approve / Deny on a quarantine review card. The card is a public message, so the reply is a deferred ephemeral followup.
+async fn on_review(ctx: &serenity::Context, data: &Data, ci: &ComponentInteraction, approve: bool, user: UserId) -> Result<(), Error> {
+    ci.create_response(&ctx.http, CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new().ephemeral(true))).await?;
+    let inv = Invoker::from_interaction(ctx, data, ci.guild_id.expect("checked in handle"), &ci.user);
+    let strip = |embed: Option<CreateEmbed>| {
+        let mut e = EditMessage::new().components(vec![]);
+        if let Some(embed) = embed {
+            e = e.embed(embed);
+        }
+        e
+    };
+    let res = async {
+        authorize(&inv, Permissions::MODERATE_MEMBERS, Some(user)).await?;
+        let Some(row) = store::quarantine_get(&data.db, inv.guild_id.get() as i64, user.get() as i64).await? else {
+            let title = ci.message.embeds.first().and_then(|e| e.title.clone()).unwrap_or_default();
+            let card = handled_card(&title, "Already handled", "Already handled");
+            if let Err(e) = ci.channel_id.edit_message(ctx, ci.message.id, strip(Some(card))).await {
+                tracing::warn!("marking stale review card failed: {e}");
+            }
+            return Err(UserError("Already handled.".into()).into());
+        };
+        let embed = if approve { release_core(&inv, user).await? } else { deny(&inv, user).await? };
+        // Release/deny marked the stored card; a copy elsewhere (the Waiting-review message) just loses its buttons.
+        if row.review_message_id != Some(ci.message.id.get() as i64) {
+            if let Err(e) = ci.channel_id.edit_message(ctx, ci.message.id, strip(None)).await {
+                tracing::warn!("stripping review buttons failed: {e}");
+            }
+        }
+        Ok::<_, Error>(embed)
+    }
+    .await;
+    let embed = outcome_of(PanelId::Review(approve, user), false, res);
+    let followup = CreateInteractionResponseFollowup::new().embed(embed).ephemeral(true).allowed_mentions(CreateAllowedMentions::new());
+    ci.create_followup(&ctx.http, followup).await?;
     Ok(())
 }
 
@@ -281,7 +446,7 @@ pub(super) fn show_views(in_ephemeral: bool, (e, rows): (CreateEmbed, Vec<Create
 }
 
 /// Text input values of a submitted pop-up, in order.
-pub(super) fn modal_values(mi: &ModalInteraction) -> Vec<String> {
+pub(crate) fn modal_values(mi: &ModalInteraction) -> Vec<String> {
     mi.data
         .components
         .iter()
@@ -297,6 +462,9 @@ async fn on_modal(ctx: &serenity::Context, data: &Data, mi: &ModalInteraction) -
     let decoded = PanelId::decode(&mi.data.custom_id);
     if let Some(PanelId::Config(c)) = decoded {
         return super::config::on_modal(ctx, data, mi, c).await;
+    }
+    if decoded == Some(PanelId::VerifyQuiz) {
+        return verify::on_submit(ctx, data, mi).await;
     }
     let Some(PanelId::Modal(a, user, chan)) = decoded else {
         mi.create_response(&ctx.http, CreateInteractionResponse::Message(msg(refused(STALE, false), vec![]).ephemeral(true))).await?;
@@ -314,11 +482,20 @@ async fn on_modal(ctx: &serenity::Context, data: &Data, mi: &ModalInteraction) -
 mod tests {
     use super::*;
 
-    const ALL: [Action; 22] = [
+    const ALL: [Action; 28] = [
+        Action::Quarantine, Action::Release, Action::WaitingReview, Action::HealthCheck, Action::Lockdown, Action::EndLockdown,
         Action::Warn, Action::Timeout, Action::Untimeout, Action::Kick, Action::Tempban, Action::Ban, Action::Unban, Action::NickSet, Action::NickReset,
         Action::Disconnect, Action::VoiceMute, Action::VoiceUnmute, Action::Move, Action::Purge, Action::History, Action::CaseView, Action::CaseReason,
         Action::CaseRemove, Action::NoteAdd, Action::NoteList, Action::NoteView, Action::NoteDelete,
     ];
+
+    #[test]
+    fn public_ids() {
+        assert!(is_public_id("mp:v") && is_public_id("mp:vq"));
+        for id in ["mp:home", "mp:h", "mp:rv:a:1", "mp:vx", "v"] {
+            assert!(!is_public_id(id), "{id}");
+        }
+    }
 
     #[test]
     fn parsers() {
@@ -345,10 +522,25 @@ mod tests {
             assert!(i.iter().all(|(l, _)| l.chars().count() <= 45));
             assert_eq!(modal_for(a, None, None).is_some(), !i.is_empty(), "{a:?}");
             // Every action is reachable: a pop-up, or a member select that runs it directly.
-            assert!(!i.is_empty() || needs_member(a), "{a:?}");
+            assert!(!i.is_empty() || needs_member(a) || direct(a), "{a:?}");
         }
         assert!(modal_inputs(Action::History).is_empty());
+        assert_eq!(modal_inputs(Action::Quarantine), vec![("Reason", true)]);
+        assert_eq!(modal_inputs(Action::Lockdown).len(), 2);
+        assert!(needs_member(Action::Release) && needs_member(Action::Quarantine) && !needs_member(Action::Lockdown));
         assert_eq!(modal_inputs(Action::Tempban), vec![("Duration (30m, 2h, 1d)", true), ("Delete days of messages (0-7)", false), ("Reason", false)]);
+    }
+
+    #[test]
+    fn lockdown_modal_title_and_prefill() {
+        let v = serde_json::to_value(modal_with(Action::Lockdown, None, None, Some("Start lockdown (12 channels)".into()), Some("Locked."))).unwrap();
+        assert_eq!(v["title"], "Start lockdown (12 channels)");
+        let first = &v["components"][0]["components"][0];
+        assert_eq!(first["value"], "Locked.");
+        assert_eq!(first["required"], false);
+        assert_eq!(first["max_length"], 1000);
+        assert_eq!(lockdown_title(6), "Start lockdown (6 channels)");
+        assert!(lockdown_title(1_000_000).chars().count() <= 45);
     }
 
     #[test]

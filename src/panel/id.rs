@@ -9,6 +9,7 @@ pub enum Category {
     Members,
     NamesVoice,
     Channels,
+    Safety,
     Records,
     Config,
 }
@@ -37,6 +38,12 @@ pub enum Action {
     NoteList,
     NoteView,
     NoteDelete,
+    Quarantine,
+    Release,
+    WaitingReview,
+    HealthCheck,
+    Lockdown,
+    EndLockdown,
 }
 
 /// Config sub-views opened from the Config category.
@@ -49,6 +56,9 @@ pub enum Page {
     Ladder,
     Decay,
     Filter,
+    Verification,
+    Quarantine,
+    Lockdown,
 }
 
 /// Config pop-ups: the button opens it, the submit carries the same token.
@@ -60,6 +70,9 @@ pub enum Form {
     Words,
     Hoist,
     Fallback,
+    Questions,
+    VerifyDesc,
+    LockMsg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +100,20 @@ pub enum ConfigId {
     DecayOff,
     /// Filter on/off button carrying the new value.
     FilterSet(bool),
+    /// Verification method: 0 off, 1 button, 2 button + quiz.
+    VerifyMode(u8),
+    /// Quiz answers: true = staff check, false = auto-check.
+    VerifyReview(bool),
+    VerifyChannel,
+    VerifyRoles,
+    VerifyPost,
+    QuarRole,
+    QuarCreate,
+    QuarChannel,
+    /// Deny action: true = ban, false = kick.
+    QuarDeny(bool),
+    QuarSync,
+    LockChannels,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,9 +129,17 @@ pub enum PanelId {
     /// Pop-up submit.
     Modal(Action, Option<UserId>, Option<ChannelId>),
     Config(ConfigId),
+    /// Quarantine review card: approve (true) or deny, for this user.
+    Review(bool, UserId),
+    /// Public Verify button on the verify message.
+    Verify,
+    /// Quiz pop-up submit.
+    VerifyQuiz,
+    /// Waiting-review member select.
+    ReviewPick,
 }
 
-const PAGES: [(Page, &str); 7] = [
+const PAGES: [(Page, &str); 10] = [
     (Page::ModRoles, "modroles"),
     (Page::Protected, "protected"),
     (Page::Logs, "logs"),
@@ -112,15 +147,21 @@ const PAGES: [(Page, &str); 7] = [
     (Page::Ladder, "ladder"),
     (Page::Decay, "decay"),
     (Page::Filter, "filter"),
+    (Page::Verification, "verify"),
+    (Page::Quarantine, "quar"),
+    (Page::Lockdown, "lock"),
 ];
 
-const FORMS: [(Form, &str); 6] = [
+const FORMS: [(Form, &str); 9] = [
     (Form::LadderAdd, "ladadd"),
     (Form::LadderRemove, "ladrem"),
     (Form::DecayOn, "decayon"),
     (Form::Words, "words"),
     (Form::Hoist, "hoist"),
     (Form::Fallback, "fallback"),
+    (Form::Questions, "quiz"),
+    (Form::VerifyDesc, "vdesc"),
+    (Form::LockMsg, "lmsg"),
 ];
 
 const ROLE_LISTS: [(RoleList, &str); 2] = [(RoleList::Mod, "mod"), (RoleList::Protected, "prot")];
@@ -169,6 +210,17 @@ impl ConfigId {
             ConfigId::Submit(f) => format!("mp:g:s:{}", tok(&FORMS, *f)),
             ConfigId::DecayOff => "mp:g:do".into(),
             ConfigId::FilterSet(v) => format!("mp:g:fi:{}", *v as u8),
+            ConfigId::VerifyMode(m) => format!("mp:g:vm:{m}"),
+            ConfigId::VerifyReview(v) => format!("mp:g:vr:{}", *v as u8),
+            ConfigId::VerifyChannel => "mp:g:vc".into(),
+            ConfigId::VerifyRoles => "mp:g:vl".into(),
+            ConfigId::VerifyPost => "mp:g:vp".into(),
+            ConfigId::QuarRole => "mp:g:qr".into(),
+            ConfigId::QuarCreate => "mp:g:qn".into(),
+            ConfigId::QuarChannel => "mp:g:qc".into(),
+            ConfigId::QuarDeny(v) => format!("mp:g:qd:{}", *v as u8),
+            ConfigId::QuarSync => "mp:g:qs".into(),
+            ConfigId::LockChannels => "mp:g:lk".into(),
         }
     }
 
@@ -186,20 +238,32 @@ impl ConfigId {
             ["s", f] => untok(&FORMS, f).map(ConfigId::Submit),
             ["do"] => Some(ConfigId::DecayOff),
             ["fi", v] => flag(v).map(ConfigId::FilterSet),
+            ["vm", m @ ("0" | "1" | "2")] => m.parse().ok().map(ConfigId::VerifyMode),
+            ["vr", v] => flag(v).map(ConfigId::VerifyReview),
+            ["vc"] => Some(ConfigId::VerifyChannel),
+            ["vl"] => Some(ConfigId::VerifyRoles),
+            ["vp"] => Some(ConfigId::VerifyPost),
+            ["qr"] => Some(ConfigId::QuarRole),
+            ["qn"] => Some(ConfigId::QuarCreate),
+            ["qc"] => Some(ConfigId::QuarChannel),
+            ["qd", v] => flag(v).map(ConfigId::QuarDeny),
+            ["qs"] => Some(ConfigId::QuarSync),
+            ["lk"] => Some(ConfigId::LockChannels),
             _ => None,
         }
     }
 }
 
-const CATEGORIES: [(Category, &str); 5] = [
+const CATEGORIES: [(Category, &str); 6] = [
     (Category::Members, "members"),
     (Category::NamesVoice, "names"),
     (Category::Channels, "channels"),
+    (Category::Safety, "safety"),
     (Category::Records, "records"),
     (Category::Config, "config"),
 ];
 
-const ACTIONS: [(Action, &str); 22] = [
+const ACTIONS: [(Action, &str); 28] = [
     (Action::Warn, "warn"),
     (Action::Timeout, "timeout"),
     (Action::Untimeout, "untimeout"),
@@ -222,6 +286,12 @@ const ACTIONS: [(Action, &str); 22] = [
     (Action::NoteList, "notelist"),
     (Action::NoteView, "noteview"),
     (Action::NoteDelete, "notedelete"),
+    (Action::Quarantine, "quarantine"),
+    (Action::Release, "release"),
+    (Action::WaitingReview, "review"),
+    (Action::HealthCheck, "health"),
+    (Action::Lockdown, "lockdown"),
+    (Action::EndLockdown, "unlock"),
 ];
 
 impl Category {
@@ -267,6 +337,10 @@ impl PanelId {
             PanelId::PickChannel(a, u) => format!("mp:p:{}:{}", a.token(), opt(u.map(|u| u.get()))),
             PanelId::Modal(a, u, c) => format!("mp:m:{}:{}:{}", a.token(), opt(u.map(|u| u.get())), opt(c.map(|c| c.get()))),
             PanelId::Config(c) => c.encode(),
+            PanelId::Verify => "mp:v".into(),
+            PanelId::VerifyQuiz => "mp:vq".into(),
+            PanelId::ReviewPick => "mp:rp".into(),
+            PanelId::Review(approve, u) => format!("mp:rv:{}:{}", if *approve { 'a' } else { 'd' }, u.get()),
         }
     }
 
@@ -281,6 +355,10 @@ impl PanelId {
             ["u", a] => Action::parse(a).map(PanelId::PickUser),
             ["p", a, u] => Some(PanelId::PickChannel(Action::parse(a)?, user(u)?)),
             ["m", a, u, c] => Some(PanelId::Modal(Action::parse(a)?, user(u)?, chan(c)?)),
+            ["v"] => Some(PanelId::Verify),
+            ["vq"] => Some(PanelId::VerifyQuiz),
+            ["rp"] => Some(PanelId::ReviewPick),
+            ["rv", k @ ("a" | "d"), u] => Some(PanelId::Review(*k == "a", user(u)??)),
             ["g", rest @ ..] => ConfigId::decode(rest).map(PanelId::Config),
             _ => None,
         }
@@ -296,6 +374,9 @@ mod tests {
         v.extend(PAGES.iter().map(|(p, _)| ConfigId::Open(*p)));
         v.extend(ROLE_LISTS.iter().map(|(r, _)| ConfigId::Roles(*r)));
         v.extend(FORMS.iter().flat_map(|(f, _)| [ConfigId::Form(*f), ConfigId::Submit(*f)]));
+        v.extend([ConfigId::VerifyMode(0), ConfigId::VerifyMode(1), ConfigId::VerifyMode(2), ConfigId::VerifyReview(true), ConfigId::VerifyReview(false)]);
+        v.extend([ConfigId::VerifyChannel, ConfigId::VerifyRoles, ConfigId::VerifyPost, ConfigId::QuarRole, ConfigId::QuarCreate, ConfigId::QuarChannel]);
+        v.extend([ConfigId::QuarDeny(true), ConfigId::QuarDeny(false), ConfigId::QuarSync, ConfigId::LockChannels]);
         for c in LogCategory::ALL.into_iter().map(Some).chain([None]) {
             v.extend([ConfigId::LogChan(c), ConfigId::LogOff(c)]);
         }
@@ -318,6 +399,13 @@ mod tests {
             PanelId::PickChannel(Action::Purge, None),
             PanelId::Modal(Action::Move, Some(big_u), Some(big_c)),
             PanelId::Modal(Action::Unban, None, None),
+            PanelId::Review(true, big_u),
+            PanelId::Review(false, UserId::new(1)),
+            PanelId::Verify,
+            PanelId::VerifyQuiz,
+            PanelId::ReviewPick,
+            PanelId::Category(Category::Safety),
+            PanelId::Action(Action::EndLockdown),
         ];
         all.extend(config_ids().into_iter().map(PanelId::Config));
         all.extend(CATEGORIES.iter().map(|(c, _)| PanelId::Category(*c)));
@@ -327,7 +415,14 @@ mod tests {
             assert!(s.starts_with("mp:") && s.len() <= 100);
             assert_eq!(PanelId::decode(&s), Some(id));
         }
-        for junk in ["", "mp:", "mp:zz", "mp:m:kick:abc:-", "other:home", "mp:c:members:extra", "mp:m:kick:0:-", "mp:p:move:+5", "mp:g", "mp:g:o:zz", "mp:g:ds:2", "mp:g:lh:nope", "mp:g:dt:ban:x", "mp:g:dt:note"] {
+        assert_eq!(PanelId::Verify.encode(), "mp:v");
+        assert_eq!(PanelId::VerifyQuiz.encode(), "mp:vq");
+        assert_eq!(PanelId::ReviewPick.encode(), "mp:rp");
+        assert_eq!(PanelId::Category(Category::Safety).encode(), "mp:c:safety");
+        assert_eq!(PanelId::Action(Action::EndLockdown).encode(), "mp:a:unlock");
+        assert_eq!(PanelId::Review(true, UserId::new(7)).encode(), "mp:rv:a:7");
+        assert_eq!(PanelId::Review(false, UserId::new(7)).encode(), "mp:rv:d:7");
+        for junk in ["", "mp:", "mp:zz", "mp:m:kick:abc:-", "other:home", "mp:c:members:extra", "mp:m:kick:0:-", "mp:p:move:+5", "mp:g", "mp:g:o:zz", "mp:g:ds:2", "mp:g:vm:3", "mp:g:vr:2", "mp:g:qd:x", "mp:g:lh:nope", "mp:g:dt:ban:x", "mp:g:dt:note", "mp:rv:x:1", "mp:rv:a:0", "mp:rv:a"] {
             assert_eq!(PanelId::decode(junk), None, "{junk}");
         }
     }

@@ -4,18 +4,20 @@ use poise::serenity_prelude::{ButtonStyle, CreateActionRow, CreateButton, Create
 
 type Views = (CreateEmbed, Vec<CreateActionRow>);
 
-const HOME_ROWS: [(&str, &str); 5] = [
+const HOME_ROWS: [(&str, &str); 6] = [
     ("👤 Members", "Warn, timeout, kick and ban"),
     ("🏷️ Names & voice", "Nicknames, voice mute, move, disconnect"),
-    ("🧹 Channels", "Purge messages"),
+    ("🧹 Channels", "Purge messages, lockdown"),
+    ("🛡️ Safety", "Quarantine, verification, health check"),
     ("📁 Records", "History, cases and private notes"),
     ("⚙️ Config", "Bot settings · Manage Server only"),
 ];
 
-const HOME_ORDER: [(Category, ButtonStyle); 5] = [
+const HOME_ORDER: [(Category, ButtonStyle); 6] = [
     (Category::Members, ButtonStyle::Primary),
     (Category::NamesVoice, ButtonStyle::Primary),
     (Category::Channels, ButtonStyle::Primary),
+    (Category::Safety, ButtonStyle::Primary),
     (Category::Records, ButtonStyle::Primary),
     (Category::Config, ButtonStyle::Secondary),
 ];
@@ -60,8 +62,21 @@ const NAMES_VOICE: &[Group] = &[
 
 const CHANNELS: &[Group] = &[(
     "",
-    &[(Action::Purge, "🧹 Purge", "Delete the last **N** messages, or everything from the last **5m**, **2h**… Optional: only one member's messages.", D)],
+    &[
+        (Action::Purge, "🧹 Purge", "Delete the last **N** messages, or everything from the last **5m**, **2h**… Optional: only one member's messages.", D),
+        (Action::Lockdown, "🔒 Lockdown", "Nobody but staff can talk in the lockdown channels.", D),
+        (Action::EndLockdown, "🔓 End lockdown", "Put every channel back exactly as it was.", G),
+    ],
 )];
+
+const SAFETY: &[Group] = &[
+    ("Quarantine", &[
+        (Action::Quarantine, "🚧 Quarantine", "Hide every channel from a member except the review channel. Their roles are saved.", D),
+        (Action::Release, "✅ Release", "Give back their roles and access.", G),
+        (Action::WaitingReview, "📋 Waiting review", "Everyone in quarantine, oldest first, with Approve / Deny.", S),
+    ]),
+    ("Server", &[(Action::HealthCheck, "🩺 Health check", "Risky permissions and missing setup, in one report.", S)]),
+];
 
 const RECORDS: &[Group] = &[
     ("Cases", &[
@@ -84,6 +99,14 @@ const CONFIG: &[(&str, &[ConfigItem])] = &[
     ("People", &[(Page::ModRoles, "🛡️ Mod roles", "Who can use moderation."), (Page::Protected, "🔒 Protected", "Roles mods can't act on.")]),
     ("Messages & logs", &[(Page::Logs, "📋 Log channels", "Where each kind of log goes."), (Page::Dm, "✉️ DM messages", "What members are told when punished.")]),
     ("Rules", &[(Page::Ladder, "📈 Ladder", "Auto-punish after N warnings."), (Page::Decay, "⏱️ Warn decay", "Old warnings stop counting."), (Page::Filter, "🚫 Name filter", "Reset bad nicknames.")]),
+    (
+        "Safety",
+        &[
+            (Page::Verification, "✅ Verification", "Off / button / button + quiz, questions, roles given."),
+            (Page::Quarantine, "🚧 Quarantine", "Role, review channel, what Deny does."),
+            (Page::Lockdown, "🔒 Lockdown", "Which channels lockdown covers."),
+        ],
+    ),
 ];
 
 fn button(id: PanelId, label: &str, style: ButtonStyle) -> CreateButton {
@@ -109,7 +132,7 @@ pub fn config_button(id: ConfigId, label: &str, style: ButtonStyle) -> CreateBut
 
 /// Emoji and label of an action's panel button.
 pub fn action_label(a: Action) -> &'static str {
-    [MEMBERS, NAMES_VOICE, CHANNELS, RECORDS]
+    [MEMBERS, NAMES_VOICE, CHANNELS, SAFETY, RECORDS]
         .into_iter()
         .flatten()
         .flat_map(|(_, items)| items.iter())
@@ -130,8 +153,9 @@ pub fn home() -> Views {
             "Pick what you need. Every reply is visible only to you and follows the same rules as the slash commands.\n\n{}",
             rows.join("\n")
         ));
-    let buttons = HOME_ORDER.iter().zip(HOME_ROWS).map(|((c, st), (label, _))| button(PanelId::Category(*c), label, *st)).collect();
-    (embed, vec![CreateActionRow::Buttons(buttons)])
+    let buttons: Vec<CreateButton> = HOME_ORDER.iter().zip(HOME_ROWS).map(|((c, st), (label, _))| button(PanelId::Category(*c), label, *st)).collect();
+    // Discord allows 5 buttons per row.
+    (embed, buttons.chunks(3).map(|c| CreateActionRow::Buttons(c.to_vec())).collect())
 }
 
 fn grouped(tone: Tone, title: &str, intro: &str, groups: &[Group], footer: Option<&str>) -> Views {
@@ -164,7 +188,8 @@ pub fn category(c: Category) -> Views {
     match c {
         Category::Members => grouped(Tone::Members, "Members", "Choose an action, then pick the member.", MEMBERS, None),
         Category::NamesVoice => grouped(Tone::NamesVoice, "Names & voice", "Choose an action, then pick the member.", NAMES_VOICE, None),
-        Category::Channels => grouped(Tone::Channels, "Channels", "Clean up a channel.", CHANNELS, Some("More channel tools (lockdown) arrive with the next update.")),
+        Category::Channels => grouped(Tone::Channels, "Channels", "Clean up or lock channels.", CHANNELS, None),
+        Category::Safety => grouped(Tone::Safety, "Safety", "Keep suspicious members out of the server until staff decide.", SAFETY, None),
         Category::Records => grouped(Tone::Records, "Records", "Look things up and keep notes.", RECORDS, None),
         Category::Config => {
             let mut e = CreateEmbed::new().colour(Tone::Config.colour()).title("Config").description("Bot settings. Changes apply right away.");
@@ -173,11 +198,14 @@ pub fn category(c: Category) -> Views {
                 e = e.field(*name, items.iter().map(|(_, l, d)| line(l, d)).collect::<Vec<_>>().join("\n"), false);
                 buttons.extend(items.iter().map(|(p, l, _)| config_button(ConfigId::Open(*p), l, S)));
             }
-            // Four per row, Back last: matches the mockup.
-            let tail = buttons.split_off(4);
-            let mut second = tail;
-            second.push(back());
-            (e, vec![CreateActionRow::Buttons(buttons), CreateActionRow::Buttons(second)])
+            // Rows of 4, 3, 3, then Back alone.
+            let mut rows = vec![];
+            for n in [4, 3, 3] {
+                let rest = buttons.split_off(n);
+                rows.push(CreateActionRow::Buttons(std::mem::replace(&mut buttons, rest)));
+            }
+            rows.push(CreateActionRow::Buttons(vec![back()]));
+            (e, rows)
         }
     }
 }
@@ -200,7 +228,7 @@ mod tests {
 
     #[test]
     fn limits_and_every_id_decodes() {
-        let cats = [Category::Members, Category::NamesVoice, Category::Channels, Category::Records, Category::Config];
+        let cats = [Category::Members, Category::NamesVoice, Category::Channels, Category::Safety, Category::Records, Category::Config];
         for (embed, rows) in std::iter::once(home()).chain(cats.map(category)) {
             let v = serde_json::to_value(&rows).unwrap();
             assert!(v.as_array().unwrap().len() <= 5);
@@ -218,9 +246,33 @@ mod tests {
     }
 
     #[test]
+    fn safety_and_channels_buttons() {
+        let ids = |c| button_ids(&category(c).1);
+        let a = |x: Action| PanelId::Action(x).encode();
+        assert_eq!(ids(Category::Safety), [a(Action::Quarantine), a(Action::Release), a(Action::WaitingReview), a(Action::HealthCheck), PanelId::Home.encode()]);
+        assert_eq!(ids(Category::Channels), [a(Action::Purge), a(Action::Lockdown), a(Action::EndLockdown), PanelId::Home.encode()]);
+        let rows = serde_json::to_value(category(Category::Safety).1).unwrap();
+        assert_eq!(rows[0]["components"].as_array().unwrap().len(), 3);
+        assert_eq!(rows[1]["components"].as_array().unwrap().len(), 2);
+        let e = serde_json::to_value(category(Category::Channels).0).unwrap();
+        assert!(e["footer"].is_null());
+    }
+
+    #[test]
+    fn config_rows_fit() {
+        let v = serde_json::to_value(category(Category::Config).1).unwrap();
+        let rows = v.as_array().unwrap();
+        let lens: Vec<usize> = rows.iter().map(|r| r["components"].as_array().unwrap().len()).collect();
+        assert_eq!(lens, [4, 3, 3, 1]);
+        let last = rows.last().unwrap()["components"][0]["custom_id"].as_str().unwrap();
+        assert_eq!(last, PanelId::Home.encode());
+    }
+
+    #[test]
     fn home_has_category_buttons() {
         let ids = button_ids(&home().1);
-        assert_eq!(ids.len(), 5);
-        assert_eq!(PanelId::decode(&ids[4]), Some(PanelId::Category(Category::Config)));
+        let cats: Vec<_> = ids.iter().map(|i| PanelId::decode(i)).collect();
+        use Category::*;
+        assert_eq!(cats, [Members, NamesVoice, Channels, Safety, Records, Config].map(|c| Some(PanelId::Category(c))));
     }
 }
