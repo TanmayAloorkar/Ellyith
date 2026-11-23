@@ -62,4 +62,16 @@ mod tests {
     fn registers_lockdown() {
         assert!(super::all_commands().iter().any(|c| c.name == "lockdown"));
     }
+
+    /// Discord allows command > group > subcommand only; deeper nesting fails registration at startup.
+    #[test]
+    fn nesting_fits_discord() {
+        for c in super::all_commands() {
+            for g in &c.subcommands {
+                for s in &g.subcommands {
+                    assert!(s.subcommands.is_empty(), "/{} {} {} nests too deep", c.name, g.name, s.name);
+                }
+            }
+        }
+    }
 }

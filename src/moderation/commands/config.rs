@@ -418,7 +418,7 @@ pub enum VerifyReview {
 #[poise::command(
     slash_command,
     guild_only,
-    subcommands("ver_method", "ver_answers", "ver_channel", "ver_roles", "ver_questions", "ver_description", "ver_post")
+    subcommands("ver_method", "ver_answers", "ver_channel", "ver_roles_add", "ver_roles_remove", "ver_roles_clear", "ver_questions", "ver_description", "ver_post")
 )]
 pub async fn verification(_: Context<'_>) -> Result<(), Error> {
     Ok(())
@@ -443,26 +443,20 @@ async fn ver_channel(ctx: Context<'_>, #[channel_types("Text")] channel: GuildCh
     reply::send(ctx, verify::set_channel_core(&Invoker::from_poise(ctx)?, channel.id).await?).await
 }
 
-/// Roles given when a member verifies.
-#[poise::command(slash_command, guild_only, rename = "roles", subcommands("ver_roles_add", "ver_roles_remove", "ver_roles_clear"))]
-async fn ver_roles(_: Context<'_>) -> Result<(), Error> {
-    Ok(())
-}
-
 /// Give this role on verification.
-#[poise::command(slash_command, guild_only, rename = "add")]
+#[poise::command(slash_command, guild_only, rename = "roles-add")]
 async fn ver_roles_add(ctx: Context<'_>, role: Role) -> Result<(), Error> {
     reply::send(ctx, verify::set_roles_core(&Invoker::from_poise(ctx)?, RoleOp::Add(role.id)).await?).await
 }
 
 /// Stop giving this role.
-#[poise::command(slash_command, guild_only, rename = "remove")]
+#[poise::command(slash_command, guild_only, rename = "roles-remove")]
 async fn ver_roles_remove(ctx: Context<'_>, role: Role) -> Result<(), Error> {
     reply::send(ctx, verify::set_roles_core(&Invoker::from_poise(ctx)?, RoleOp::Remove(role.id)).await?).await
 }
 
 /// Give no roles on verification.
-#[poise::command(slash_command, guild_only, rename = "clear")]
+#[poise::command(slash_command, guild_only, rename = "roles-clear")]
 async fn ver_roles_clear(ctx: Context<'_>) -> Result<(), Error> {
     reply::send(ctx, verify::set_roles_core(&Invoker::from_poise(ctx)?, RoleOp::Clear).await?).await
 }
