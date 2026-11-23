@@ -9,6 +9,7 @@ use crate::{Context, Error, UserError};
 use poise::serenity_prelude::{CreateEmbed, Permissions, Role, User};
 
 pub const RAID_RESPONSES: [&str; 5] = ["alert", "quarantine", "kick", "ban", "lockdown"];
+pub const RAID_FILTERS: [&str; 2] = ["age", "avatar"];
 pub const ALT_RESPONSES: [&str; 2] = ["flag", "quarantine"];
 pub const GATE_ACTIONS: [&str; 4] = ["flag", "quarantine", "kick", "ban"];
 
@@ -238,14 +239,27 @@ pub async fn raid_responses_core(inv: &Invoker<'_>, response: &str, add: bool) -
     require_manage_server(inv).await?;
     let r = pick(response, &RAID_RESPONSES)?;
     let mut s = load(inv).await?;
-    s.raid_responses.retain(|x| *x != r);
-    if add {
-        s.raid_responses.push(r);
-    }
-    // Keep a stable order regardless of the order they were added in.
-    s.raid_responses.sort_by_key(|x| RAID_RESPONSES.iter().position(|y| y == x));
+    toggle(&mut s.raid_responses, r, add, &RAID_RESPONSES);
     save(inv, &s).await?;
     Ok(saved(EMOJI_RAID, "Raid responses", raid_lines(&s)))
+}
+
+pub async fn raid_filter_core(inv: &Invoker<'_>, filter: &str, add: bool) -> Result<CreateEmbed, Error> {
+    require_manage_server(inv).await?;
+    let f = pick(filter, &RAID_FILTERS)?;
+    let mut s = load(inv).await?;
+    toggle(&mut s.raid_filter, f, add, &RAID_FILTERS);
+    save(inv, &s).await?;
+    Ok(saved(EMOJI_RAID, "Raid filter", raid_lines(&s)))
+}
+
+/// Adds or removes `v`, keeping the list in `order`.
+fn toggle(list: &mut Vec<String>, v: String, add: bool, order: &[&str]) {
+    list.retain(|x| *x != v);
+    if add {
+        list.push(v);
+    }
+    list.sort_by_key(|x| order.iter().position(|y| y == x));
 }
 
 // ---- alts ----
@@ -345,6 +359,17 @@ pub async fn trust_core(inv: &Invoker<'_>, kind: TrustKind, id: i64, add: bool) 
     Ok(reply::done(Tone::Safety, &format!("{EMOJI_NUKE} Trusted list updated"), &[(note, shown)], None))
 }
 
+/// Owner gate first, then exactly one of user or role.
+pub async fn trust_pick_core(inv: &Invoker<'_>, user: Option<i64>, role: Option<i64>, add: bool) -> Result<CreateEmbed, Error> {
+    require_owner(inv).await?;
+    let (k, id) = match (user, role) {
+        (Some(u), None) => (TrustKind::User, u),
+        (None, Some(r)) => (TrustKind::Role, r),
+        _ => return Err(user_err("Give a user or a role, not both.")),
+    };
+    trust_core(inv, k, id, add).await
+}
+
 pub async fn trust_list_core(inv: &Invoker<'_>) -> Result<CreateEmbed, Error> {
     require_manage_server(inv).await?;
     let all = store::trusted(&inv.data.db, gid(inv)).await?;
@@ -408,7 +433,7 @@ pub enum AddRemove {
 }
 
 /// Raid mode: burst detection and responses.
-#[poise::command(slash_command, guild_only, rename = "raid", subcommands("raid_status", "raid_start", "raid_end", "raid_settings", "raid_responses"))]
+#[poise::command(slash_command, guild_only, rename = "raid", subcommands("raid_status", "raid_start", "raid_end", "raid_settings", "raid_responses", "raid_filter"))]
 pub async fn raid(_: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
@@ -453,6 +478,21 @@ async fn raid_settings(
 async fn raid_responses(ctx: Context<'_>, response: RaidResponseChoice, action: AddRemove) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
     reply::send(ctx, raid_responses_core(&Invoker::from_poise(ctx)?, response.key(), matches!(action, AddRemove::Add)).await?).await
+}
+
+#[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
+pub enum RaidFilterChoice {
+    #[name = "New account"]
+    Age,
+    #[name = "Default avatar"]
+    Avatar,
+}
+
+/// Add or remove a kick/ban filter: only matching raiders are kicked or banned.
+#[poise::command(slash_command, guild_only, rename = "filter")]
+async fn raid_filter(ctx: Context<'_>, filter: RaidFilterChoice, action: AddRemove) -> Result<(), Error> {
+    ctx.defer_ephemeral().await?;
+    reply::send(ctx, raid_filter_core(&Invoker::from_poise(ctx)?, RAID_FILTERS[filter as usize], matches!(action, AddRemove::Add)).await?).await
 }
 
 /// Alt detection: score joins against banned users.
@@ -574,29 +614,18 @@ async fn nuke_trust(_: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Exactly one of user or role.
-fn trust_target(user: Option<User>, role: Option<Role>) -> Result<(TrustKind, i64), Error> {
-    match (user, role) {
-        (Some(u), None) => Ok((TrustKind::User, u.id.get() as i64)),
-        (None, Some(r)) => Ok((TrustKind::Role, r.id.get() as i64)),
-        _ => Err(user_err("Give a user or a role, not both.")),
-    }
-}
-
 /// Trust a member or a role (server owner only).
 #[poise::command(slash_command, guild_only, rename = "add")]
-async fn trust_add(ctx: Context<'_>, user: Option<User>, role: Option<Role>) -> Result<(), Error> {
+async fn trust_add(ctx: Context<'_>, #[description = "Member to trust"] user: Option<User>, #[description = "Role to trust"] role: Option<Role>) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
-    let (k, id) = trust_target(user, role)?;
-    reply::send(ctx, trust_core(&Invoker::from_poise(ctx)?, k, id, true).await?).await
+    reply::send(ctx, trust_pick_core(&Invoker::from_poise(ctx)?, user.map(|u| u.id.get() as i64), role.map(|r| r.id.get() as i64), true).await?).await
 }
 
 /// Stop trusting a member or a role (server owner only).
 #[poise::command(slash_command, guild_only, rename = "remove")]
-async fn trust_remove(ctx: Context<'_>, user: Option<User>, role: Option<Role>) -> Result<(), Error> {
+async fn trust_remove(ctx: Context<'_>, #[description = "Member to stop trusting"] user: Option<User>, #[description = "Role to stop trusting"] role: Option<Role>) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
-    let (k, id) = trust_target(user, role)?;
-    reply::send(ctx, trust_core(&Invoker::from_poise(ctx)?, k, id, false).await?).await
+    reply::send(ctx, trust_pick_core(&Invoker::from_poise(ctx)?, user.map(|u| u.id.get() as i64), role.map(|r| r.id.get() as i64), false).await?).await
 }
 
 /// Show the trusted list.
@@ -660,7 +689,25 @@ mod tests {
         assert!(pick("nuke", &RAID_RESPONSES).is_err());
         assert!(pick("kick", &ALT_RESPONSES).is_err());
         assert!(pick("kick", &GATE_ACTIONS).is_ok());
-        assert_eq!(RaidResponseChoice::Lockdown.key(), "lockdown");
+        use RaidResponseChoice as R;
+        for (c, k) in [(R::Alert, "alert"), (R::Quarantine, "quarantine"), (R::Kick, "kick"), (R::Ban, "ban"), (R::Lockdown, "lockdown")] {
+            assert_eq!(c.key(), k);
+        }
+        assert!(pick("age", &RAID_FILTERS).is_ok() && pick("ban", &RAID_FILTERS).is_err());
+        assert_eq!(RAID_FILTERS[RaidFilterChoice::Avatar as usize], "avatar");
+    }
+
+    #[test]
+    fn toggling_keeps_order() {
+        let mut l = vec!["avatar".to_string()];
+        toggle(&mut l, "age".into(), true, &RAID_FILTERS);
+        assert_eq!(l, ["age", "avatar"]);
+        toggle(&mut l, "age".into(), true, &RAID_FILTERS);
+        assert_eq!(l, ["age", "avatar"]);
+        toggle(&mut l, "age".into(), false, &RAID_FILTERS);
+        assert_eq!(l, ["avatar"]);
+        toggle(&mut l, "age".into(), false, &RAID_FILTERS);
+        assert_eq!(l, ["avatar"]);
     }
 
     #[test]
