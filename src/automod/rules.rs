@@ -101,7 +101,7 @@ impl RuleKind {
             Self::ScamLinks => (Timeout, 86_400, 0, 0, 0, 0),
             Self::WallsOfText => (Delete, 600, 15, 0, 0, 1500),
             Self::SpoilerSpam => (Delete, 600, 5, 0, 0, 0),
-            Self::Zalgo => (Delete, 600, 4, 0, 40, 0),
+            Self::Zalgo => (Delete, 600, 4, 0, 30, 0),
         };
         RuleConfig { kind: self, enabled: false, action, timeout_secs, threshold, window_secs, percent, extra, ignored_roles: vec![], ignored_channels: vec![] }
     }

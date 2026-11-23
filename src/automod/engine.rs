@@ -264,7 +264,7 @@ pub fn evaluate(r: &GuildRules, m: &MsgFacts, scam: &HashSet<String>) -> Vec<Hit
             RuleKind::ScamLinks => hosts.iter().any(|h| matchers::host_in_set(h, scam)),
             RuleKind::WallsOfText => matchers::line_count(text) > n(c.threshold) || text.chars().count() > n(c.extra),
             RuleKind::SpoilerSpam => matchers::spoiler_count(text) > n(c.threshold),
-            RuleKind::Zalgo => matchers::zalgo(text),
+            RuleKind::Zalgo => matchers::zalgo(text, n(c.threshold).max(1) as u32, c.percent.clamp(0, 100) as u8),
             RuleKind::Invites | RuleKind::FastMessages | RuleKind::RepeatedMessages | RuleKind::FileSpam => false,
         })
         .map(|c| hit(c, vec![(m.channel, m.message)]))

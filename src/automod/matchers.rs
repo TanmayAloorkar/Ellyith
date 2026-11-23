@@ -136,21 +136,21 @@ fn is_mark(c: char) -> bool {
     matches!(c, '\u{300}'..='\u{36f}' | '\u{1ab0}'..='\u{1aff}' | '\u{1dc0}'..='\u{1dff}' | '\u{20d0}'..='\u{20ff}' | '\u{fe20}'..='\u{fe2f}')
 }
 
-/// Zalgo if 4+ combining marks stack on one character, or marks are over 30% of a 10+ char message.
-/// Real accents stack 1-2 marks, so these thresholds spare normal text.
-pub fn zalgo(content: &str) -> bool {
+/// Zalgo if `max_marks`+ combining marks stack on one character, or marks are over `max_percent`% of a 10+ char message.
+/// Real accents stack 1-2 marks, so the defaults (4, 30) spare normal text.
+pub fn zalgo(content: &str, max_marks: u32, max_percent: u8) -> bool {
     let (mut run, mut marks, mut total) = (0, 0, 0);
     for c in content.chars() {
         total += 1;
         if is_mark(c) {
             marks += 1;
             run += 1;
-            if run >= 4 { return true; }
+            if run >= max_marks { return true; }
         } else {
             run = 0;
         }
     }
-    total >= 10 && marks * 100 / total > 30
+    total >= 10 && marks * 100 / total > u32::from(max_percent)
 }
 
 static HOST: LazyLock<Regex> =
@@ -267,8 +267,14 @@ mod tests {
     fn wall_spoiler_zalgo() {
         assert_eq!(line_count("a\nb\nc"), 3);
         assert_eq!(spoiler_count("||a|| ||b|| ||"), 2);
-        assert!(zalgo("h\u{300}\u{301}\u{302}\u{303}i"));
-        assert!(!zalgo("caf\u{e9} cre\u{300}me"));
+        assert!(zalgo("h\u{300}\u{301}\u{302}\u{303}i", 4, 30));
+        assert!(!zalgo("caf\u{e9} cre\u{300}me", 4, 30));
+        // Stricter settings catch what the defaults let through.
+        assert!(!zalgo("h\u{300}\u{301}i", 4, 30));
+        assert!(zalgo("h\u{300}\u{301}i", 2, 30));
+        let spread = "a\u{300}b\u{300}c\u{300}d\u{300}e\u{300}fghijklmnop";
+        assert!(!zalgo(spread, 4, 30));
+        assert!(zalgo(spread, 4, 10));
     }
 
     #[test]
