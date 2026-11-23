@@ -1,5 +1,6 @@
 pub mod alts;
 pub mod antinuke;
+pub mod commands;
 pub mod invites;
 pub mod join;
 pub mod logic;
