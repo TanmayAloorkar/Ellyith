@@ -9,6 +9,7 @@ pub mod invoker;
 pub mod reply;
 pub mod panel;
 pub mod safety;
+pub mod automod;
 
 #[derive(Clone)]
 pub struct Data {
