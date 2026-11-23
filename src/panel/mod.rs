@@ -1,3 +1,4 @@
+pub mod automod;
 pub mod config;
 pub mod flows;
 pub mod id;

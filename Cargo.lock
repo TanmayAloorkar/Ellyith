@@ -24,6 +24,8 @@ dependencies = [
  "chrono",
  "dotenvy",
  "poise",
+ "regex",
+ "reqwest",
  "serde_json",
  "sqlx",
  "tokio",

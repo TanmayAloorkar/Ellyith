@@ -4,20 +4,22 @@ use poise::serenity_prelude::{ButtonStyle, CreateActionRow, CreateButton, Create
 
 type Views = (CreateEmbed, Vec<CreateActionRow>);
 
-const HOME_ROWS: [(&str, &str); 6] = [
+const HOME_ROWS: [(&str, &str); 7] = [
     ("👤 Members", "Warn, timeout, kick and ban"),
     ("🏷️ Names & voice", "Nicknames, voice mute, move, disconnect"),
     ("🧹 Channels", "Purge messages, lockdown"),
     ("🛡️ Safety", "Quarantine, verification, health check"),
+    ("🤖 AutoMod", "Banned words, spam and link rules"),
     ("📁 Records", "History, cases and private notes"),
     ("⚙️ Config", "Bot settings · Manage Server only"),
 ];
 
-const HOME_ORDER: [(Category, ButtonStyle); 6] = [
+const HOME_ORDER: [(Category, ButtonStyle); 7] = [
     (Category::Members, ButtonStyle::Primary),
     (Category::NamesVoice, ButtonStyle::Primary),
     (Category::Channels, ButtonStyle::Primary),
     (Category::Safety, ButtonStyle::Primary),
+    (Category::AutoMod, ButtonStyle::Primary),
     (Category::Records, ButtonStyle::Primary),
     (Category::Config, ButtonStyle::Secondary),
 ];
@@ -154,8 +156,8 @@ pub fn home() -> Views {
             rows.join("\n")
         ));
     let buttons: Vec<CreateButton> = HOME_ORDER.iter().zip(HOME_ROWS).map(|((c, st), (label, _))| button(PanelId::Category(*c), label, *st)).collect();
-    // Discord allows 5 buttons per row.
-    (embed, buttons.chunks(3).map(|c| CreateActionRow::Buttons(c.to_vec())).collect())
+    // Rows of 4 and 3 (Discord allows 5).
+    (embed, buttons.chunks(4).map(|c| CreateActionRow::Buttons(c.to_vec())).collect())
 }
 
 fn grouped(tone: Tone, title: &str, intro: &str, groups: &[Group], footer: Option<&str>) -> Views {
@@ -190,6 +192,10 @@ pub fn category(c: Category) -> Views {
         Category::NamesVoice => grouped(Tone::NamesVoice, "Names & voice", "Choose an action, then pick the member.", NAMES_VOICE, None),
         Category::Channels => grouped(Tone::Channels, "Channels", "Clean up or lock channels.", CHANNELS, None),
         Category::Safety => grouped(Tone::Safety, "Safety", "Keep suspicious members out of the server until staff decide.", SAFETY, None),
+        Category::AutoMod => (
+            CreateEmbed::new().colour(Tone::Config.colour()).title("🤖 AutoMod"),
+            vec![super::automod::rule_menu(), back_row()],
+        ),
         Category::Records => grouped(Tone::Records, "Records", "Look things up and keep notes.", RECORDS, None),
         Category::Config => {
             let mut e = CreateEmbed::new().colour(Tone::Config.colour()).title("Config").description("Bot settings. Changes apply right away.");
@@ -228,7 +234,7 @@ mod tests {
 
     #[test]
     fn limits_and_every_id_decodes() {
-        let cats = [Category::Members, Category::NamesVoice, Category::Channels, Category::Safety, Category::Records, Category::Config];
+        let cats = [Category::Members, Category::NamesVoice, Category::Channels, Category::Safety, Category::AutoMod, Category::Records, Category::Config];
         for (embed, rows) in std::iter::once(home()).chain(cats.map(category)) {
             let v = serde_json::to_value(&rows).unwrap();
             assert!(v.as_array().unwrap().len() <= 5);
@@ -273,6 +279,16 @@ mod tests {
         let ids = button_ids(&home().1);
         let cats: Vec<_> = ids.iter().map(|i| PanelId::decode(i)).collect();
         use Category::*;
-        assert_eq!(cats, [Members, NamesVoice, Channels, Safety, Records, Config].map(|c| Some(PanelId::Category(c))));
+        assert_eq!(cats, [Members, NamesVoice, Channels, Safety, AutoMod, Records, Config].map(|c| Some(PanelId::Category(c))));
+        let v = serde_json::to_value(home().1).unwrap();
+        let lens: Vec<usize> = v.as_array().unwrap().iter().map(|r| r["components"].as_array().unwrap().len()).collect();
+        assert_eq!(lens, [4, 3]);
+    }
+
+    #[test]
+    fn automod_category_has_rule_select() {
+        let v = serde_json::to_value(category(Category::AutoMod).1).unwrap();
+        assert_eq!(v[0]["components"][0]["options"].as_array().unwrap().len(), 13);
+        assert_eq!(v[1]["components"][0]["custom_id"], PanelId::Home.encode());
     }
 }

@@ -9,12 +9,14 @@ pub mod invoker;
 pub mod reply;
 pub mod panel;
 pub mod safety;
+pub mod automod;
 
 #[derive(Clone)]
 pub struct Data {
     pub db: sqlx::PgPool,
     pub home_guild: poise::serenity_prelude::GuildId,
     pub msg_cache: std::sync::Arc<logging::cache::MessageCache>,
+    pub automod: std::sync::Arc<automod::engine::AutoMod>,
 }
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Context<'a> = poise::Context<'a, Data, Error>;
@@ -33,7 +35,7 @@ impl std::error::Error for UserError {}
 pub fn all_commands() -> Vec<poise::Command<Data, Error>> {
     {
         use moderation::commands::{cases, punish::*};
-        vec![ping(), moderation::commands::config::config(), warn(), timeout(), untimeout(), kick(), ban(), tempban(), unban(), cases::case(), cases::history(), cases::note(), cases::mywarnings(), moderation::commands::nick::nick(), moderation::commands::voice::voice(), moderation::commands::purge::purge(), safety::commands::quarantine(), safety::lockdown::lockdown(), healthcheck()]
+        vec![ping(), moderation::commands::config::config(), warn(), timeout(), untimeout(), kick(), ban(), tempban(), unban(), cases::case(), cases::history(), cases::note(), cases::mywarnings(), moderation::commands::nick::nick(), moderation::commands::voice::voice(), moderation::commands::purge::purge(), safety::commands::quarantine(), safety::lockdown::lockdown(), automod::commands::automod(), healthcheck()]
     }
 }
 
@@ -56,6 +58,11 @@ mod tests {
     #[test]
     fn registers_quarantine() {
         assert!(super::all_commands().iter().any(|c| c.name == "quarantine"));
+    }
+
+    #[test]
+    fn registers_automod() {
+        assert!(super::all_commands().iter().any(|c| c.name == "automod"));
     }
 
     #[test]

@@ -261,7 +261,12 @@ async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIntera
             let inv = Invoker::from_interaction(ctx, data, ci.guild_id.expect("checked in handle"), &ci.user);
             show(super::config::category(&inv).await)
         }
+        PanelId::Category(Category::AutoMod) => {
+            let inv = Invoker::from_interaction(ctx, data, ci.guild_id.expect("checked in handle"), &ci.user);
+            show(super::automod::category(&inv).await)
+        }
         PanelId::Category(c) => show(view::category(c)),
+        PanelId::AutoMod(a) => return super::automod::on_component(ctx, data, ci, a).await,
         PanelId::Config(c) => return super::config::on_component(ctx, data, ci, c).await,
         PanelId::Review(approve, user) => return on_review(ctx, data, ci, approve, user).await,
         PanelId::Verify => return verify::on_press(ctx, data, ci).await,
@@ -462,6 +467,9 @@ async fn on_modal(ctx: &serenity::Context, data: &Data, mi: &ModalInteraction) -
     let decoded = PanelId::decode(&mi.data.custom_id);
     if let Some(PanelId::Config(c)) = decoded {
         return super::config::on_modal(ctx, data, mi, c).await;
+    }
+    if let Some(PanelId::AutoMod(a)) = decoded {
+        return super::automod::on_modal(ctx, data, mi, a).await;
     }
     if decoded == Some(PanelId::VerifyQuiz) {
         return verify::on_submit(ctx, data, mi).await;

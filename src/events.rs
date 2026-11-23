@@ -1,3 +1,4 @@
+use crate::automod::engine;
 use crate::moderation::jobs::{self, JobKind};
 use crate::logging::{audit, messages};
 use crate::moderation::nickname;
@@ -48,8 +49,13 @@ pub async fn event_handler(
                 }
             }
         }
-        serenity::FullEvent::Message { new_message } => messages::on_message(data, new_message),
+        serenity::FullEvent::Message { new_message } => {
+            messages::on_message(data, new_message);
+            engine::on_message(ctx, data, new_message).await
+        }
         serenity::FullEvent::MessageUpdate { new, event, .. } => {
+            // Before on_update, which overwrites the cached content used to spot real edits.
+            engine::on_edit(ctx, data, event).await;
             messages::on_update(&ctx.http, data, new.as_ref(), event).await
         }
         serenity::FullEvent::MessageDelete { channel_id, deleted_message_id, guild_id } => {
