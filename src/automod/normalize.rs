@@ -1,4 +1,7 @@
 //! Message folding and similarity for repeat detection and banned-word disguises.
+use std::sync::LazyLock;
+
+use regex::Regex;
 
 /// Lowercase, map look-alikes (`1`/`|`→i, 0→o, 3→e, 4→a, 5→s, 7→t, @→a, $→s; `l` stays),
 /// drop everything that is not a letter/digit (spaces, punctuation, zero-width), collapse runs.
@@ -20,6 +23,19 @@ pub fn fold(s: &str) -> String {
     out
 }
 
+/// Folded text longer than this is cut before similarity, so Levenshtein stays cheap.
+const MAX_FOLDED: usize = 500;
+
+static EMOJI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<a?:(\w+):\d+>").unwrap());
+static MENTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<@[!&]?\d+>|<#\d+>").unwrap());
+
+/// `fold` for the repeat window: custom emoji become their name, mentions are dropped
+/// (their IDs are not text), capped at 500 chars.
+pub fn fold_for_repeat(s: &str) -> String {
+    let s = MENTION.replace_all(s, " ");
+    fold(&EMOJI.replace_all(&s, " $1 ")).chars().take(MAX_FOLDED).collect()
+}
+
 fn levenshtein(a: &[char], b: &[char]) -> usize {
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     for (i, ca) in a.iter().enumerate() {
@@ -34,7 +50,7 @@ fn levenshtein(a: &[char], b: &[char]) -> usize {
 
 /// 0-100 (100 = identical) normalised Levenshtein of the folded strings.
 pub fn similarity(a: &str, b: &str) -> u8 {
-    let (a, b): (Vec<char>, Vec<char>) = (fold(a).chars().collect(), fold(b).chars().collect());
+    let (a, b): (Vec<char>, Vec<char>) = (fold(a).chars().take(MAX_FOLDED).collect(), fold(b).chars().take(MAX_FOLDED).collect());
     let max = a.len().max(b.len());
     if max == 0 { return 100; }
     (100 - levenshtein(&a, &b) * 100 / max) as u8
@@ -67,5 +83,21 @@ mod tests {
     fn short_messages_never_repeat() {
         assert!(!is_repeat("ok", "ok", 80));
         assert!(!is_repeat("lol", "LOL!", 80));
+    }
+
+    #[test]
+    fn repeat_fold_drops_emoji_ids_and_mentions() {
+        let f = fold_for_repeat("<:pepe:123456789012345678>");
+        assert_eq!(f, "pepe");
+        assert!(!is_repeat(&f, &f, 80)); // three of these never add up to a repeat
+        assert_eq!(fold_for_repeat("<@123456789012345678> <@&5> <#6> hello there"), "helothere");
+        assert_eq!(fold_for_repeat("<a:blobdance:99> hi"), "blobdancehi");
+        assert_eq!(fold_for_repeat(&"ab".repeat(1000)).chars().count(), 500);
+    }
+
+    #[test]
+    fn similarity_is_capped() {
+        let long = "abcdefghij".repeat(1000);
+        assert_eq!(similarity(&long, &long), 100);
     }
 }

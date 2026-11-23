@@ -12,7 +12,7 @@ use poise::serenity_prelude::{
 use sqlx::PgPool;
 
 use super::matchers::{self, CompiledWords};
-use super::normalize::fold;
+use super::normalize::fold_for_repeat;
 use super::rules::{RuleAction, RuleConfig, RuleKind};
 use super::store;
 use super::window::{Seen, Windows};
@@ -135,7 +135,7 @@ impl AutoMod {
         if live.is_empty() {
             return vec![];
         }
-        self.windows.push(guild, user, Seen { channel: m.channel, message: m.message, at: now, folded: fold(&m.content), attachments });
+        self.windows.push(guild, user, Seen { channel: m.channel, message: m.message, at: now, folded: fold_for_repeat(&m.content), attachments });
         live.into_iter()
             .filter_map(|c| {
                 let (t, w) = (c.threshold.max(1) as usize, Duration::from_secs(c.window_secs.clamp(1, 300) as u64));
@@ -223,6 +223,8 @@ pub fn exempt(f: &MemberFacts, s: &GuildSettings) -> bool {
 /// The message as the rules see it.
 pub struct MsgFacts {
     pub channel: u64,
+    /// The parent channel when `channel` is a thread or forum post.
+    pub parent: Option<u64>,
     pub message: u64,
     pub roles: Vec<u64>,
     pub content: String,
@@ -233,6 +235,7 @@ pub struct MsgFacts {
 fn applies(c: &RuleConfig, m: &MsgFacts) -> bool {
     c.enabled
         && !c.ignored_channels.contains(&(m.channel as i64))
+        && !m.parent.is_some_and(|p| c.ignored_channels.contains(&(p as i64)))
         && !m.roles.iter().any(|r| c.ignored_roles.contains(&(*r as i64)))
 }
 
@@ -257,10 +260,9 @@ pub fn evaluate(r: &GuildRules, m: &MsgFacts, scam: &HashSet<String>) -> Vec<Hit
             }
             RuleKind::EmojiSpam => matchers::emoji_count(text) > n(c.threshold),
             RuleKind::AllCaps => {
-                text.chars().filter(|ch| ch.is_alphabetic()).count() >= n(c.threshold)
-                    && matchers::caps_percent(text).is_some_and(|p| i32::from(p) >= c.percent)
+                matchers::caps_percent(text, n(c.threshold)).is_some_and(|p| i32::from(p) >= c.percent)
             }
-            RuleKind::Links => hosts.iter().any(|h| !matchers::site_allowed(h, &r.sites)),
+            RuleKind::Links => hosts.iter().any(|h| !matchers::link_allowed(h, &r.sites)),
             RuleKind::ScamLinks => hosts.iter().any(|h| matchers::host_in_set(h, scam)),
             RuleKind::WallsOfText => matchers::line_count(text) > n(c.threshold) || text.chars().count() > n(c.extra),
             RuleKind::SpoilerSpam => matchers::spoiler_count(text) > n(c.threshold),
@@ -327,6 +329,12 @@ fn discord_code(e: &serenity::Error) -> Option<isize> {
     }
 }
 
+/// Parent of a thread (forum posts included), from the cache.
+fn parent_of(ctx: &serenity::Context, guild: GuildId, channel: ChannelId) -> Option<u64> {
+    let g = ctx.cache.guild(guild)?;
+    g.threads.iter().find(|t| t.id == channel).and_then(|t| t.parent_id).map(|p| p.get())
+}
+
 fn roles_of(member: Option<&serenity::PartialMember>) -> Vec<u64> {
     member.map(|m| m.roles.iter().map(|r| r.get()).collect()).unwrap_or_default()
 }
@@ -338,6 +346,7 @@ pub async fn on_message(ctx: &serenity::Context, data: &Data, msg: &Message) {
     }
     let m = MsgFacts {
         channel: msg.channel_id.get(),
+        parent: parent_of(ctx, guild, msg.channel_id),
         message: msg.id.get(),
         roles: roles_of(msg.member.as_deref()),
         content: msg.content.clone(),
@@ -363,6 +372,7 @@ pub async fn on_edit(ctx: &serenity::Context, data: &Data, ev: &MessageUpdateEve
     };
     let m = MsgFacts {
         channel: ev.channel_id.get(),
+        parent: parent_of(ctx, guild, ev.channel_id),
         message: ev.id.get(),
         roles,
         content: content.clone(),
@@ -594,7 +604,7 @@ mod tests {
             words: CompiledWords::new(&[]),
             sites: vec!["youtube.com".into()],
         };
-        let m = |channel: u64, content: &str| MsgFacts { channel, message: 1, roles: vec![], content: content.into(), user_mentions: 0, role_mentions: 0 };
+        let m = |channel: u64, content: &str| MsgFacts { channel, parent: None, message: 1, roles: vec![], content: content.into(), user_mentions: 0, role_mentions: 0 };
         let kinds = |m: &MsgFacts| evaluate(&r, m, &HashSet::new()).into_iter().map(|h| h.kind).collect::<Vec<_>>();
         assert_eq!(kinds(&m(1, "see https://sub.youtube.com/x")), vec![]);
         assert_eq!(kinds(&m(1, "see evil.io now @everyone")), vec![RuleKind::Links, RuleKind::MassMentions]);
@@ -603,5 +613,12 @@ mod tests {
         let ignored_role = MsgFacts { roles: vec![5], ..m(1, "evil.io") };
         let r2 = GuildRules { rules: vec![RuleConfig { ignored_roles: vec![5], ..on(RuleKind::Links) }], words: CompiledWords::new(&[]), sites: vec![] };
         assert!(evaluate(&r2, &ignored_role, &HashSet::new()).is_empty());
+        // A thread under an ignored channel is ignored too.
+        assert_eq!(kinds(&MsgFacts { parent: Some(77), ..m(9, "THIS IS ALL SHOUTING NOW") }), vec![]);
+        assert_eq!(kinds(&MsgFacts { parent: Some(8), ..m(9, "THIS IS ALL SHOUTING NOW") }), vec![RuleKind::AllCaps]);
+        // Discord's own links and GIFs never trip Links.
+        assert_eq!(kinds(&m(1, "https://media.tenor.com/x.gif https://cdn.discordapp.com/a.png discord.gg/abc")), vec![]);
+        // Custom emoji names are not shouting.
+        assert_eq!(kinds(&m(1, "<:KEKW:1><:OMEGALUL:2><:POGGERS:3>")), vec![]);
     }
 }

@@ -86,13 +86,13 @@ fn trigger_text(c: &RuleConfig, words: usize, sites: usize) -> Option<String> {
         RuleKind::FastMessages => format!("{} in {}s", c.threshold, c.window_secs),
         RuleKind::RepeatedMessages => format!("{} similar in {}s", c.threshold, c.window_secs),
         RuleKind::MassMentions => format!("{}+ mentions", c.threshold),
-        RuleKind::EmojiSpam => format!("{}+ emojis", c.threshold),
+        RuleKind::EmojiSpam => format!("more than {} emojis", c.threshold),
         RuleKind::AllCaps => format!("{}% caps, {}+ letters", c.percent, c.threshold),
         RuleKind::FileSpam => format!("{} files in {}s", c.threshold, c.window_secs),
         RuleKind::Links => format!("{sites} allowed sites"),
-        RuleKind::WallsOfText => format!("{} lines or {} characters", c.threshold, c.extra),
-        RuleKind::SpoilerSpam => format!("{}+ spoilers", c.threshold),
-        RuleKind::Zalgo => format!("{}+ stacked marks, {}% of text", c.threshold, c.percent),
+        RuleKind::WallsOfText => format!("more than {} lines or {} characters", c.threshold, c.extra),
+        RuleKind::SpoilerSpam => format!("more than {} spoilers", c.threshold),
+        RuleKind::Zalgo => format!("{}+ stacked marks or more than {}% of text", c.threshold, c.percent),
         RuleKind::Invites | RuleKind::ScamLinks => return None,
     })
 }
@@ -536,6 +536,15 @@ mod tests {
         let c = d(RuleKind::FastMessages);
         assert_eq!(settings_text(&c, 0, 0), "6 in 5s · timeout 10m");
         assert_eq!(rule_line(&c, 0, 0), "Off");
+    }
+
+    #[test]
+    fn summaries_match_the_comparisons() {
+        let t = |k: RuleKind| settings_text(&d(k), 0, 0);
+        assert!(t(RuleKind::EmojiSpam).starts_with("more than 10 emojis"));
+        assert!(t(RuleKind::SpoilerSpam).starts_with("more than 5 spoilers"));
+        assert!(t(RuleKind::WallsOfText).starts_with("more than 15 lines or 1500 characters"));
+        assert!(t(RuleKind::Zalgo).starts_with("4+ stacked marks or more than 30% of text"));
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use regex::{Regex, RegexBuilder};
 
-use super::normalize::{fold, lookalike};
+use super::normalize::lookalike;
 use super::rules::{WordEntry, WordKind};
 use crate::UserError;
 
@@ -21,8 +21,39 @@ pub struct CompiledWords(Vec<Compiled>);
 
 fn is_zero_width(c: char) -> bool { matches!(c, '\u{200b}'..='\u{200f}' | '\u{2060}' | '\u{feff}') }
 
+/// Look-alikes mapped, except in all-digit words ("455" is a number, not "ass").
 fn mapped(w: &str) -> Vec<char> {
-    w.chars().flat_map(char::to_lowercase).map(lookalike).filter(|c| c.is_alphanumeric()).collect()
+    let numeric = w.chars().all(|c| c.is_ascii_digit());
+    w.chars().flat_map(char::to_lowercase).map(|c| if numeric { c } else { lookalike(c) }).filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// Wildcard subject: tokens joined by single spaces, runs of single letters merged ("s c a m" -> "scam").
+fn wildcard_subject(toks: &[Vec<char>]) -> String {
+    let mut s = String::new();
+    let mut prev_single = false;
+    for t in toks {
+        let single = t.len() == 1;
+        if !s.is_empty() && !(single && prev_single) { s.push(' '); }
+        s.extend(t);
+        prev_single = single;
+    }
+    s
+}
+
+/// Each letter `c` becomes `c+` (runs are not collapsed), `*` becomes `.*`; an edge without `*`
+/// must sit on a word boundary of the subject.
+fn wildcard_regex(pattern: &str) -> Option<Regex> {
+    let seg = |p: &str| {
+        p.split_whitespace()
+            .map(|w| mapped(w).iter().map(|c| format!("{}+", regex::escape(&c.to_string()))).collect::<String>())
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let body = pattern.split('*').map(seg).collect::<Vec<_>>().join(".*");
+    let start = if pattern.starts_with('*') { "" } else { "(?:^| )" };
+    let end = if pattern.ends_with('*') { "" } else { "(?: |$)" };
+    Regex::new(&format!("{start}{body}{end}")).ok()
 }
 
 /// `tok` is `pat` with each letter repeated at least as often ("asss" matches "ass", "as" does not).
@@ -78,10 +109,7 @@ impl CompiledWords {
                 let items: Vec<Vec<char>> = e.pattern.split_whitespace().map(mapped).filter(|w| !w.is_empty()).collect();
                 (!items.is_empty()).then(|| Compiled::Whole(e.pattern.clone(), items))
             }
-            WordKind::Wildcard => {
-                let body = e.pattern.split('*').map(|p| regex::escape(&fold(p))).collect::<Vec<_>>().join(".*");
-                Regex::new(&format!("^{body}$")).ok().map(|r| Compiled::Wildcard(e.pattern.clone(), r))
-            }
+            WordKind::Wildcard => wildcard_regex(&e.pattern).map(|r| Compiled::Wildcard(e.pattern.clone(), r)),
             WordKind::Regex => compile_regex(&e.pattern).ok().map(|r| Compiled::Regex(e.pattern.clone(), r)),
         }).collect();
         Self(v)
@@ -89,9 +117,9 @@ impl CompiledWords {
 
     /// The first entry (as written) that `content` hits.
     pub fn hit(&self, content: &str) -> Option<String> {
-        let folded = fold(content);
         let toks = tokens(content);
         let joined = joined_windows(&toks);
+        let wild = wildcard_subject(&toks);
         self.0.iter().find_map(|c| match c {
             Compiled::Whole(p, items) => {
                 let found = if items.len() == 1 {
@@ -101,7 +129,7 @@ impl CompiledWords {
                 };
                 found.then(|| p.clone())
             }
-            Compiled::Wildcard(p, r) => r.is_match(&folded).then(|| p.clone()),
+            Compiled::Wildcard(p, r) => r.is_match(&wild).then(|| p.clone()),
             Compiled::Regex(p, r) => r.is_match(content).then(|| p.clone()),
         })
     }
@@ -121,11 +149,15 @@ pub fn emoji_count(content: &str) -> usize {
     CUSTOM_EMOJI.find_iter(content).count() + UNICODE_EMOJI.find_iter(&CUSTOM_EMOJI.replace_all(content, "")).count()
 }
 
-/// Share of letters that are uppercase; None under 10 letters.
-pub fn caps_percent(content: &str) -> Option<u8> {
-    let letters = content.chars().filter(|c| c.is_alphabetic()).count();
-    if letters < 10 { return None; }
-    Some((content.chars().filter(|c| c.is_uppercase()).count() * 100 / letters) as u8)
+static NOT_TEXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<a?:\w+:\d+>|<@[!&]?\d+>|<#\d+>|https?://\S+").unwrap());
+
+/// Share of letters that are uppercase, ignoring custom emoji, mentions and URLs;
+/// None under `min_letters` (at least 10) letters.
+pub fn caps_percent(content: &str, min_letters: usize) -> Option<u8> {
+    let text = NOT_TEXT.replace_all(content, " ");
+    let letters = text.chars().filter(|c| c.is_alphabetic()).count();
+    if letters < min_letters.max(10) { return None; }
+    Some((text.chars().filter(|c| c.is_uppercase()).count() * 100 / letters) as u8)
 }
 
 pub fn line_count(content: &str) -> usize { content.lines().count() }
@@ -159,10 +191,24 @@ static INVITE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b(?:discord\.gg|discord(?:app)?\.com/invite)/([a-z0-9-]+)").unwrap());
 
 const TLDS: &[&str] = &[
-    "com", "net", "org", "io", "gg", "co", "me", "xyz", "ru", "tk", "ly", "app", "dev", "link", "site", "online",
-    "shop", "club", "top", "info", "biz", "us", "uk", "tv", "gift", "ml", "ga", "cf", "gq", "cc", "to", "live",
-    "fun", "store", "tech", "pw", "su", "in", "de", "fr", "br", "eu",
+    "com", "net", "org", "io", "gg", "xyz", "ru", "tk", "ly", "app", "dev", "link", "site", "online",
+    "shop", "club", "top", "info", "biz", "uk", "tv", "gift", "ml", "ga", "cf", "gq", "cc", "live",
+    "fun", "store", "tech", "pw", "su", "fr", "br", "eu",
 ];
+// in, to, me, co, us, de are left out: "done.In", "talk.to", "tell.us" are English. Scheme URLs still count.
+
+/// Discord's own content and the GIF pickers; invites are judged by the Invites rule only.
+const ALWAYS_ALLOWED: &[&str] = &["discord.com", "discordapp.com", "discord.gg", "tenor.com", "giphy.com"];
+
+fn under(host: &str, domain: &str) -> bool {
+    let d = domain.to_lowercase();
+    host == d || host.ends_with(&format!(".{d}"))
+}
+
+/// Allowed by the server's list or built in.
+pub fn link_allowed(host: &str, allowed: &[String]) -> bool {
+    site_allowed(host, allowed) || ALWAYS_ALLOWED.iter().any(|a| under(host, a))
+}
 
 /// Hosts of scheme URLs (any TLD) and bare `domain.tld` (common TLDs only), lowercase, no `www.`.
 pub fn extract_hosts(content: &str) -> Vec<String> {
@@ -177,10 +223,7 @@ pub fn extract_hosts(content: &str) -> Vec<String> {
 
 /// Equal to an allowed domain or a subdomain of it.
 pub fn site_allowed(host: &str, allowed: &[String]) -> bool {
-    allowed.iter().any(|a| {
-        let a = a.to_lowercase();
-        host == a || host.ends_with(&format!(".{a}"))
-    })
+    allowed.iter().any(|a| under(host, a))
 }
 
 pub fn invite_codes(content: &str) -> Vec<String> {
@@ -226,6 +269,31 @@ mod tests {
     }
 
     #[test]
+    fn wildcards_keep_letter_runs() {
+        let no = |w: &str, t: &str| assert!(words(&[w]).hit(t).is_none(), "{w} vs {t}");
+        let yes = |w: &str, t: &str| assert!(words(&[w]).hit(t).is_some(), "{w} vs {t}");
+        no("*nigg*", "good night"); no("*nigg*", "a knight"); yes("*nigg*", "n1gggg");
+        no("*ass*", "was"); no("*ass*", "he has it"); yes("*ass*", "a$$hole"); yes("*scam*", "s c a m");
+    }
+
+    #[test]
+    fn wildcards_anchor_to_words() {
+        let no = |w: &str, t: &str| assert!(words(&[w]).hit(t).is_none(), "{w} vs {t}");
+        let yes = |w: &str, t: &str| assert!(words(&[w]).hit(t).is_some(), "{w} vs {t}");
+        yes("free*nitro", "get free nitro here"); yes("free*nitro", "freeee n1tro!!");
+        no("free*nitro", "carefree nitrous"); no("free*nitro", "carefree nitro"); no("free*nitro", "free nitrous");
+        yes("scam*", "scammer here"); no("scam*", "megascammer"); yes("*scam", "megascam!");
+    }
+
+    #[test]
+    fn numbers_are_not_lookalikes() {
+        let w = words(&["ass"]);
+        assert!(w.hit("I scored 455").is_none());
+        assert!(w.hit("a55").is_some());
+        assert!(words(&["1488"]).hit("so 1488 lol").is_some());
+    }
+
+    #[test]
     fn regex_ci_and_mentions() {
         assert!(words(&["/discord\\.gift/"]).hit("DISCORD.GIFT/x").is_some());
         assert_eq!(mention_count(0, 0, "email@here.com @here"), 1);
@@ -238,6 +306,8 @@ mod tests {
         assert_eq!(extract_hosts("example.com/x"), ["example.com"]);
         assert_eq!(extract_hosts("free-nitro.gift"), ["free-nitro.gift"]);
         assert_eq!(extract_hosts("http://a.thing/x"), ["a.thing"]);
+        for t in ["done.In the end", "talk.to you", "tell.us", "go.me", "a.co", "ok.de"] { assert!(extract_hosts(t).is_empty(), "{t}"); }
+        assert_eq!(extract_hosts("https://x.to/a"), ["x.to"]);
     }
 
     #[test]
@@ -258,9 +328,17 @@ mod tests {
 
     #[test]
     fn caps_rules() {
-        assert_eq!(caps_percent("HELLO THERE FRIEND"), Some(100));
-        assert_eq!(caps_percent("HI"), None);
-        assert_eq!(caps_percent("hello There friend"), Some(6));
+        assert_eq!(caps_percent("HELLO THERE FRIEND", 0), Some(100));
+        assert_eq!(caps_percent("HI", 0), None);
+        assert_eq!(caps_percent("hello There friend", 0), Some(6));
+        assert_eq!(caps_percent("HELLO THERE FRIEND", 20), None);
+    }
+
+    #[test]
+    fn caps_ignores_emoji_mentions_urls() {
+        assert_eq!(caps_percent("<:KEKW:1><:OMEGALUL:2>", 0), None);
+        assert_eq!(caps_percent("<a:PEPEDANCE:3> <@12> <@&34> <#56> https://EXAMPLE.COM/ABCDEFGHIJ ok", 0), None);
+        assert_eq!(caps_percent("<:KEKW:1> hello there friend", 0), Some(0));
     }
 
     #[test]
@@ -284,6 +362,9 @@ mod tests {
         assert!(site_allowed("youtube.com", &allowed));
         assert!(!site_allowed("youtube.com.evil.io", &allowed));
         assert!(!site_allowed("notyoutube.com", &allowed));
+        for h in ["discord.com", "cdn.discordapp.com", "discord.gg", "media.tenor.com", "giphy.com"] { assert!(link_allowed(h, &[]), "{h}"); }
+        assert!(!link_allowed("discord.gift", &[]) && !link_allowed("notdiscord.com", &[]));
+        assert!(link_allowed("sub.youtube.com", &allowed));
         assert_eq!(extract_hosts("see example.com/path and https://WWW.Foo.org/x"), ["example.com", "foo.org"]);
     }
 

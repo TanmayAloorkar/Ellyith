@@ -8,17 +8,11 @@ use std::time::Duration;
 const SOURCE: &str = "https://raw.githubusercontent.com/Discord-AntiScam/scam-links/main/list.json";
 const MIN_DOMAINS: usize = 100;
 
-/// One domain per line (`#` comments, blanks skipped) or a JSON array of strings.
-pub fn parse_list(body: &str) -> HashSet<String> {
-    let items: Vec<String> = match serde_json::from_str::<Vec<String>>(body) {
-        Ok(v) => v,
-        Err(_) => body
-            .lines()
-            .map(|l| l.split('#').next().unwrap_or(""))
-            .map(str::to_string)
-            .collect(),
-    };
-    items.iter().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect()
+/// The source is a JSON array of domain strings; anything else (an HTML error page, a moved file) is None.
+/// Entries without a dot or with spaces are dropped.
+pub fn parse_list(body: &str) -> Option<HashSet<String>> {
+    let items = serde_json::from_str::<Vec<String>>(body).ok()?;
+    Some(items.iter().map(|s| s.trim().to_lowercase()).filter(|s| s.contains('.') && !s.contains(char::is_whitespace)).collect())
 }
 
 /// Guards against an empty or truncated download wiping the last good copy.
@@ -40,8 +34,9 @@ async fn fetch() -> Result<String, reqwest::Error> {
 }
 
 pub async fn refresh(data: &Data) {
-    let new = match fetch().await {
-        Ok(body) => parse_list(&body),
+    let new = match fetch().await.map(|b| parse_list(&b)) {
+        Ok(Some(set)) => set,
+        Ok(None) => return tracing::warn!("scam list rejected: not a JSON array of domains"),
         Err(e) => return tracing::warn!("scam list download failed: {e}"),
     };
     if !accept(&new) {
@@ -72,10 +67,11 @@ mod tests {
 
     #[test]
     fn parse_list_formats() {
-        let s = parse_list("# c\n\n  Evil.COM \nb.xyz # x\n");
-        assert_eq!(s, HashSet::from(["evil.com".to_string(), "b.xyz".to_string()]));
-        let j = parse_list(r#"["A.com", " b.org "]"#);
-        assert_eq!(j, HashSet::from(["a.com".to_string(), "b.org".to_string()]));
+        let j = parse_list(r#"["A.com", " b.org ", "nodot", "a b.com"]"#);
+        assert_eq!(j, Some(HashSet::from(["a.com".to_string(), "b.org".to_string()])));
+        assert_eq!(parse_list("# c\n\n  Evil.COM \nb.xyz # x\n"), None);
+        assert_eq!(parse_list("<!DOCTYPE html>\n<html><body>404: Not Found</body></html>"), None);
+        assert_eq!(parse_list(r#"{"domains": ["a.com"]}"#), None);
     }
 
     #[test]
