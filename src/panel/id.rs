@@ -1,3 +1,4 @@
+use crate::automod::rules::RuleKind;
 use crate::logging::LogCategory;
 use crate::moderation::cases::CaseKind;
 use crate::moderation::commands::config_core::RoleList;
@@ -10,6 +11,7 @@ pub enum Category {
     NamesVoice,
     Channels,
     Safety,
+    AutoMod,
     Records,
     Config,
 }
@@ -116,6 +118,38 @@ pub enum ConfigId {
     LockChannels,
 }
 
+/// Banned-words and allowed-sites pop-ups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListForm {
+    WordsAdd,
+    WordsRemove,
+    SiteAdd,
+    SiteRemove,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoId {
+    /// Rule string select on the category page.
+    Pick,
+    /// Generic page of one rule ("Action & ignores").
+    Rule(RuleKind),
+    /// Action select; Timeout then opens a pop-up.
+    Action(RuleKind),
+    /// Timeout length pop-up submit.
+    Timeout(RuleKind),
+    /// Ignored-roles select, saved on select.
+    Roles(RuleKind),
+    /// Ignored-channels select, saved on select.
+    Chans(RuleKind),
+    /// Turn on/off button carrying the new value.
+    Toggle(RuleKind, bool),
+    /// Settings button opens the pop-up; the submit carries the other id.
+    Settings(RuleKind),
+    SettingsSubmit(RuleKind),
+    Form(ListForm),
+    Submit(ListForm),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelId {
     /// Back to the category list.
@@ -129,6 +163,7 @@ pub enum PanelId {
     /// Pop-up submit.
     Modal(Action, Option<UserId>, Option<ChannelId>),
     Config(ConfigId),
+    AutoMod(AutoId),
     /// Quarantine review card: approve (true) or deny, for this user.
     Review(bool, UserId),
     /// Public Verify button on the verify message.
@@ -163,6 +198,8 @@ const FORMS: [(Form, &str); 9] = [
     (Form::VerifyDesc, "vdesc"),
     (Form::LockMsg, "lmsg"),
 ];
+
+const LIST_FORMS: [(ListForm, &str); 4] = [(ListForm::WordsAdd, "wa"), (ListForm::WordsRemove, "wr"), (ListForm::SiteAdd, "sa"), (ListForm::SiteRemove, "sr")];
 
 const ROLE_LISTS: [(RoleList, &str); 2] = [(RoleList::Mod, "mod"), (RoleList::Protected, "prot")];
 
@@ -254,11 +291,48 @@ impl ConfigId {
     }
 }
 
-const CATEGORIES: [(Category, &str); 6] = [
+impl AutoId {
+    fn encode(&self) -> String {
+        match self {
+            AutoId::Pick => "mp:z:p".into(),
+            AutoId::Rule(k) => format!("mp:z:o:{}", k.as_str()),
+            AutoId::Action(k) => format!("mp:z:a:{}", k.as_str()),
+            AutoId::Timeout(k) => format!("mp:z:t:{}", k.as_str()),
+            AutoId::Roles(k) => format!("mp:z:r:{}", k.as_str()),
+            AutoId::Chans(k) => format!("mp:z:c:{}", k.as_str()),
+            AutoId::Toggle(k, v) => format!("mp:z:e:{}:{}", k.as_str(), *v as u8),
+            AutoId::Settings(k) => format!("mp:z:n:{}", k.as_str()),
+            AutoId::SettingsSubmit(k) => format!("mp:z:ns:{}", k.as_str()),
+            AutoId::Form(f) => format!("mp:z:f:{}", tok(&LIST_FORMS, *f)),
+            AutoId::Submit(f) => format!("mp:z:s:{}", tok(&LIST_FORMS, *f)),
+        }
+    }
+
+    fn decode(parts: &[&str]) -> Option<Self> {
+        let kind = |s: &str| RuleKind::from_str(s).ok();
+        match parts {
+            ["p"] => Some(AutoId::Pick),
+            ["o", k] => kind(k).map(AutoId::Rule),
+            ["a", k] => kind(k).map(AutoId::Action),
+            ["t", k] => kind(k).map(AutoId::Timeout),
+            ["r", k] => kind(k).map(AutoId::Roles),
+            ["c", k] => kind(k).map(AutoId::Chans),
+            ["e", k, v] => Some(AutoId::Toggle(kind(k)?, flag(v)?)),
+            ["n", k] => kind(k).map(AutoId::Settings),
+            ["ns", k] => kind(k).map(AutoId::SettingsSubmit),
+            ["f", f] => untok(&LIST_FORMS, f).map(AutoId::Form),
+            ["s", f] => untok(&LIST_FORMS, f).map(AutoId::Submit),
+            _ => None,
+        }
+    }
+}
+
+const CATEGORIES: [(Category, &str); 7] = [
     (Category::Members, "members"),
     (Category::NamesVoice, "names"),
     (Category::Channels, "channels"),
     (Category::Safety, "safety"),
+    (Category::AutoMod, "automod"),
     (Category::Records, "records"),
     (Category::Config, "config"),
 ];
@@ -337,6 +411,7 @@ impl PanelId {
             PanelId::PickChannel(a, u) => format!("mp:p:{}:{}", a.token(), opt(u.map(|u| u.get()))),
             PanelId::Modal(a, u, c) => format!("mp:m:{}:{}:{}", a.token(), opt(u.map(|u| u.get())), opt(c.map(|c| c.get()))),
             PanelId::Config(c) => c.encode(),
+            PanelId::AutoMod(a) => a.encode(),
             PanelId::Verify => "mp:v".into(),
             PanelId::VerifyQuiz => "mp:vq".into(),
             PanelId::ReviewPick => "mp:rp".into(),
@@ -360,6 +435,7 @@ impl PanelId {
             ["rp"] => Some(PanelId::ReviewPick),
             ["rv", k @ ("a" | "d"), u] => Some(PanelId::Review(*k == "a", user(u)??)),
             ["g", rest @ ..] => ConfigId::decode(rest).map(PanelId::Config),
+            ["z", rest @ ..] => AutoId::decode(rest).map(PanelId::AutoMod),
             _ => None,
         }
     }
@@ -408,6 +484,15 @@ mod tests {
             PanelId::Action(Action::EndLockdown),
         ];
         all.extend(config_ids().into_iter().map(PanelId::Config));
+        all.extend(
+            [AutoId::Pick]
+                .into_iter()
+                .chain(RuleKind::ALL.into_iter().flat_map(|k| {
+                    [AutoId::Rule(k), AutoId::Action(k), AutoId::Timeout(k), AutoId::Roles(k), AutoId::Chans(k), AutoId::Toggle(k, true), AutoId::Toggle(k, false), AutoId::Settings(k), AutoId::SettingsSubmit(k)]
+                }))
+                .chain(LIST_FORMS.iter().flat_map(|(f, _)| [AutoId::Form(*f), AutoId::Submit(*f)]))
+                .map(PanelId::AutoMod),
+        );
         all.extend(CATEGORIES.iter().map(|(c, _)| PanelId::Category(*c)));
         all.extend(ACTIONS.iter().map(|(a, _)| PanelId::Modal(*a, Some(big_u), Some(big_c))));
         for id in all {
@@ -419,10 +504,12 @@ mod tests {
         assert_eq!(PanelId::VerifyQuiz.encode(), "mp:vq");
         assert_eq!(PanelId::ReviewPick.encode(), "mp:rp");
         assert_eq!(PanelId::Category(Category::Safety).encode(), "mp:c:safety");
+        assert_eq!(PanelId::Category(Category::AutoMod).encode(), "mp:c:automod");
+        assert_eq!(PanelId::AutoMod(AutoId::Toggle(RuleKind::Links, true)).encode(), "mp:z:e:links:1");
         assert_eq!(PanelId::Action(Action::EndLockdown).encode(), "mp:a:unlock");
         assert_eq!(PanelId::Review(true, UserId::new(7)).encode(), "mp:rv:a:7");
         assert_eq!(PanelId::Review(false, UserId::new(7)).encode(), "mp:rv:d:7");
-        for junk in ["", "mp:", "mp:zz", "mp:m:kick:abc:-", "other:home", "mp:c:members:extra", "mp:m:kick:0:-", "mp:p:move:+5", "mp:g", "mp:g:o:zz", "mp:g:ds:2", "mp:g:vm:3", "mp:g:vr:2", "mp:g:qd:x", "mp:g:lh:nope", "mp:g:dt:ban:x", "mp:g:dt:note", "mp:rv:x:1", "mp:rv:a:0", "mp:rv:a"] {
+        for junk in ["", "mp:", "mp:zz", "mp:m:kick:abc:-", "other:home", "mp:c:members:extra", "mp:m:kick:0:-", "mp:p:move:+5", "mp:g", "mp:g:o:zz", "mp:g:ds:2", "mp:g:vm:3", "mp:g:vr:2", "mp:g:qd:x", "mp:g:lh:nope", "mp:g:dt:ban:x", "mp:g:dt:note", "mp:rv:x:1", "mp:z", "mp:z:o:nope", "mp:z:e:words:2", "mp:z:e:words", "mp:z:f:zz", "mp:z:p:x", "mp:c:automod:x", "mp:rv:a:0", "mp:rv:a"] {
             assert_eq!(PanelId::decode(junk), None, "{junk}");
         }
     }

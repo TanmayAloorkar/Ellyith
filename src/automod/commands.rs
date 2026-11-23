@@ -213,6 +213,8 @@ pub async fn set_settings_core(inv: &Invoker<'_>, kind: RuleKind, threshold: Opt
 }
 
 pub enum Target { Role(i64), Channel(i64) }
+/// A rule's whole ignored list, set at once.
+pub enum Targets { Roles(Vec<i64>), Channels(Vec<i64>) }
 
 pub async fn ignore_core(inv: &Invoker<'_>, kind: RuleKind, target: Target, add: bool) -> Result<CreateEmbed, Error> {
     require_manage_server(inv).await?;
@@ -229,6 +231,28 @@ pub async fn ignore_core(inv: &Invoker<'_>, kind: RuleKind, target: Target, add:
     save(inv, &c).await?;
     let t = format!("{} {} ignored {what}s updated", kind.emoji(), kind.label());
     Ok(reply::done(Tone::Config, &t, &[(if add { "Ignoring" } else { "No longer ignoring" }, shown)], None))
+}
+
+/// Replaces a rule's whole ignored list (panel multi-select). Same 25 cap as `ignore_core`.
+pub async fn ignore_set_core(inv: &Invoker<'_>, kind: RuleKind, target: Targets) -> Result<CreateEmbed, Error> {
+    require_manage_server(inv).await?;
+    let mut c = one_rule(inv, kind).await?;
+    let (list, ids, what, p) = match target {
+        Targets::Roles(v) => (&mut c.ignored_roles, v, "role", "@&"),
+        Targets::Channels(v) => (&mut c.ignored_channels, v, "channel", "#"),
+    };
+    *list = cap_ids(ids, what)?;
+    let shown = if list.is_empty() { "none".to_string() } else { list.iter().map(|i| format!("<{p}{i}>")).collect::<Vec<_>>().join(", ") };
+    save(inv, &c).await?;
+    Ok(reply::done(Tone::Config, &format!("{} {} ignored {what}s updated", kind.emoji(), kind.label()), &[("Ignoring", shown)], None))
+}
+
+/// Repeats dropped; at most `MAX_IGNORED`.
+fn cap_ids(ids: Vec<i64>, what: &str) -> Result<Vec<i64>, UserError> {
+    let mut out: Vec<i64> = vec![];
+    for i in ids { if !out.contains(&i) { out.push(i); } }
+    if out.len() > MAX_IGNORED { return Err(UserError(format!("At most {MAX_IGNORED} ignored {what}s per rule."))); }
+    Ok(out)
 }
 
 fn entries(s: &str) -> Vec<&str> { s.split(';').map(str::trim).filter(|x| !x.is_empty()).collect() }
@@ -542,6 +566,14 @@ mod tests {
         let mut l = d(RuleKind::Links);
         l.enabled = true;
         assert_eq!(rule_line(&l, 0, 5), "On · 5 allowed sites · delete");
+    }
+
+    #[test]
+    fn ignored_lists_dedupe_and_cap() {
+        assert_eq!(cap_ids(vec![3, 1, 3], "role").unwrap(), vec![3, 1]);
+        assert!(cap_ids((1..=25).collect(), "role").is_ok());
+        assert!(cap_ids((1..=26).collect(), "role").unwrap_err().0.contains("At most 25"));
+        assert!(cap_ids(vec![], "role").unwrap().is_empty());
     }
 
     #[test]
