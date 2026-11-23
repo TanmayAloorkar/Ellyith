@@ -100,8 +100,7 @@ pub async fn on_join(ctx: &serenity::Context, data: &Data, member: &Member) -> b
                         }
                     }
                 }
-                // shortcut: no gate quarantine reason (the DB check allows verification/manual/raid/alt), so it is Manual with the gate note; add one with a migration if staff find it confusing.
-                _ => quarantine_as(ctx, data, member, QuarantineReason::Manual, GATE_REASON).await,
+                _ => quarantine_as(ctx, data, member, QuarantineReason::Gate, GATE_REASON).await,
             }
         }
         JoinOutcome::Alt => {

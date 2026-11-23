@@ -34,10 +34,11 @@ pub enum QuarantineReason {
     Manual,
     Raid,
     Alt,
+    Gate,
 }
 
 impl QuarantineReason {
-    const ALL: [Self; 4] = [Self::Verification, Self::Manual, Self::Raid, Self::Alt];
+    const ALL: [Self; 5] = [Self::Verification, Self::Manual, Self::Raid, Self::Alt, Self::Gate];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -45,6 +46,7 @@ impl QuarantineReason {
             Self::Manual => "manual",
             Self::Raid => "raid",
             Self::Alt => "alt",
+            Self::Gate => "gate",
         }
     }
 
@@ -54,6 +56,7 @@ impl QuarantineReason {
             Self::Manual => "Quarantined by staff",
             Self::Raid => "Raid",
             Self::Alt => "Possible alt",
+            Self::Gate => "New account",
         }
     }
 }
@@ -169,13 +172,27 @@ pub async fn enter(
         dm_failed: false,
     };
     record_or_log(ctx, data, None, case).await?;
-    if reason != QuarantineReason::Verification || row.answers.is_some() {
+    if posts_card(reason, row.answers.is_some()) {
         // Already quarantined: a missing card is not worth failing over (Waiting review still lists them).
         if let Err(e) = post_review_card(ctx, data, guild_id, &row).await {
             tracing::warn!("posting review card for {uid} failed: {e}");
         }
     }
     Ok(())
+}
+
+/// Verification waits for answers; raid quarantines are reviewed together when raid mode ends.
+fn posts_card(reason: QuarantineReason, has_answers: bool) -> bool {
+    match reason {
+        QuarantineReason::Verification => has_answers,
+        QuarantineReason::Raid => false,
+        _ => true,
+    }
+}
+
+/// Release grants the verified roles too, except after a staff quarantine: approval counts as verified (spec §10.4).
+fn grants_verified(reason: &str) -> bool {
+    reason != QuarantineReason::Manual.as_str()
 }
 
 async fn actor_name(ctx: &serenity::Context, actor: Actor) -> String {
@@ -204,7 +221,7 @@ pub async fn release(ctx: &serenity::Context, data: &Data, guild_id: GuildId, us
     match guild_id.member(ctx, user).await {
         Ok(m) => {
             let q = s.quarantine_role_id.map(|r| RoleId::new(r as u64));
-            let verified: &[i64] = if row.reason == QuarantineReason::Verification.as_str() { &s.verify_roles } else { &[] };
+            let verified: &[i64] = if grants_verified(&row.reason) { &s.verify_roles } else { &[] };
             let top = bot_top(ctx, guild_id).await?;
             let existing: Vec<(RoleInfo, String)> = {
                 let g = ctx.cache.guild(guild_id).ok_or("guild not in cache")?;
@@ -528,12 +545,32 @@ mod tests {
 
     #[test]
     fn reason_round_trip() {
-        for r in [QuarantineReason::Verification, QuarantineReason::Manual, QuarantineReason::Raid, QuarantineReason::Alt] {
+        for r in QuarantineReason::ALL {
             assert_eq!(r.as_str().parse::<QuarantineReason>(), Ok(r));
         }
+        assert_eq!(QuarantineReason::Gate.as_str(), "gate");
+        assert_eq!(QuarantineReason::Gate.label(), "New account");
         assert_eq!(QuarantineReason::Alt.as_str(), "alt");
         assert_eq!(QuarantineReason::Verification.label(), "Waiting for verification");
         assert!("nope".parse::<QuarantineReason>().is_err());
+    }
+
+    #[test]
+    fn raid_quarantine_has_no_card() {
+        assert!(!posts_card(QuarantineReason::Raid, false));
+        assert!(!posts_card(QuarantineReason::Verification, false));
+        assert!(posts_card(QuarantineReason::Verification, true));
+        assert!(posts_card(QuarantineReason::Alt, false));
+        assert!(posts_card(QuarantineReason::Gate, false));
+        assert!(posts_card(QuarantineReason::Manual, false));
+    }
+
+    #[test]
+    fn approval_counts_as_verified() {
+        for r in ["verification", "raid", "alt", "gate"] {
+            assert!(grants_verified(r), "{r}");
+        }
+        assert!(!grants_verified("manual"));
     }
 
     fn role(position: u16, managed: bool, permissions: Permissions) -> Role {
