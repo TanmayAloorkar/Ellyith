@@ -38,12 +38,15 @@ pub fn channel_summary(ids: &[ChannelId]) -> String {
     }
 }
 
-pub fn precheck(active: bool, channels: &[i64]) -> Result<(), UserError> {
+pub fn precheck(active: bool, channels: &[i64], mod_roles: &[i64]) -> Result<(), UserError> {
     if active {
         return Err(UserError("A lockdown is already active.".into()));
     }
     if channels.is_empty() {
         return Err(UserError("No lockdown channels are set. Add them in Config → Lockdown.".into()));
+    }
+    if mod_roles.is_empty() {
+        return Err(UserError("Set mod roles first (Config → Mod roles) so staff can still talk.".into()));
     }
     Ok(())
 }
@@ -165,8 +168,9 @@ pub async fn start(
     let _busy = Busy::take(guild_id)?;
     let gid = guild_id.get() as i64;
     let s = store::get_settings(&data.db, gid).await?;
-    precheck(store::lockdown_active(&data.db, gid).await?, &s.lockdown_channels)?;
-    let mods: Vec<u64> = settings::get_or_create(&data.db, gid).await?.mod_roles.iter().map(|r| *r as u64).collect();
+    let mod_roles = settings::get_or_create(&data.db, gid).await?.mod_roles;
+    precheck(store::lockdown_active(&data.db, gid).await?, &s.lockdown_channels, &mod_roles)?;
+    let mods: Vec<u64> = mod_roles.iter().map(|r| *r as u64).collect();
     let bot = ctx.cache.current_user().id.get();
     let mut r = LockdownResult { done: vec![], skipped: vec![] };
     for &ch in &s.lockdown_channels {
@@ -232,6 +236,7 @@ pub async fn end(ctx: &serenity::Context, data: &Data, guild_id: GuildId, actor:
     if rows.is_empty() {
         return Err(UserError("No lockdown is active.".into()).into());
     }
+    let quarantine_role = store::get_settings(&data.db, gid).await?.quarantine_role_id.map(|r| r as u64);
     let mut r = LockdownResult { done: vec![], skipped: vec![] };
     for (ch, posted, saved) in rows {
         let id = ChannelId::new(ch as u64);
@@ -245,7 +250,7 @@ pub async fn end(ctx: &serenity::Context, data: &Data, guild_id: GuildId, actor:
             }
         };
         if let Some((current, _)) = current {
-            let (set, del) = restore_plan(&saved, &current);
+            let (set, del) = restore_plan(&saved, &current, quarantine_role);
             if let (_, Some(e)) = apply(ctx, id, &current, &set, &del).await {
                 tracing::warn!("unlocking {id} failed: {e}");
                 r.skipped.push(id);
@@ -272,7 +277,7 @@ pub async fn end(ctx: &serenity::Context, data: &Data, guild_id: GuildId, actor:
 }
 
 /// Manage Channels as a Discord permission (owner and Administrators pass); a mod role alone is not enough.
-async fn require_manage_channels(inv: &Invoker<'_>) -> Result<(), Error> {
+pub async fn require_manage_channels(inv: &Invoker<'_>) -> Result<(), Error> {
     let m = require_member(inv, inv.user.id).await?;
     let f = member_facts(inv.ctx, inv.guild_id, &m).await?;
     if f.is_owner || f.permissions.contains(Permissions::ADMINISTRATOR) || f.permissions.contains(Permissions::MANAGE_CHANNELS) {
@@ -428,9 +433,10 @@ mod tests {
 
     #[test]
     fn prechecks() {
-        assert_eq!(precheck(true, &[1]).unwrap_err().0, "A lockdown is already active.");
-        assert_eq!(precheck(false, &[]).unwrap_err().0, "No lockdown channels are set. Add them in Config → Lockdown.");
-        assert!(precheck(false, &[1]).is_ok());
+        assert_eq!(precheck(true, &[1], &[2]).unwrap_err().0, "A lockdown is already active.");
+        assert_eq!(precheck(false, &[], &[2]).unwrap_err().0, "No lockdown channels are set. Add them in Config → Lockdown.");
+        assert_eq!(precheck(false, &[1], &[]).unwrap_err().0, "Set mod roles first (Config → Mod roles) so staff can still talk.");
+        assert!(precheck(false, &[1], &[2]).is_ok());
     }
 
     #[test]

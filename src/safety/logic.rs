@@ -96,13 +96,21 @@ pub fn lockdown_overwrites(
     out
 }
 
-pub fn restore_plan(saved: &[SavedOverwrite], current: &[SavedOverwrite]) -> (Vec<SavedOverwrite>, Vec<SavedOverwrite>) {
+/// `quarantine_role`'s overwrite is left as it is now: it may have been set during the lockdown,
+/// and restoring or deleting it would expose quarantined members.
+pub fn restore_plan(
+    saved: &[SavedOverwrite],
+    current: &[SavedOverwrite],
+    quarantine_role: Option<u64>,
+) -> (Vec<SavedOverwrite>, Vec<SavedOverwrite>) {
+    let keep = |o: &&SavedOverwrite| o.is_member || Some(o.target_id as u64) != quarantine_role;
     let del = current
         .iter()
+        .filter(keep)
         .filter(|c| !saved.iter().any(|s| s.target_id == c.target_id && s.is_member == c.is_member))
         .cloned()
         .collect();
-    (saved.to_vec(), del)
+    (saved.iter().filter(keep).cloned().collect(), del)
 }
 
 pub struct HealthInput {
@@ -145,8 +153,8 @@ pub fn health_lines(h: &HealthInput) -> (Vec<HealthLine>, Vec<HealthLine>) {
         probs.push((Bad, "@everyone has dangerous permissions".into(), "Everyone in the server can use them. Remove them from @everyone.".into()));
     }
     for (name, perms, is_mod) in &h.roles {
-        if !is_mod && perms.intersects(DANGEROUS) {
-            probs.push((Bad, format!("{name} has dangerous permissions"), "It is not a mod role. Check who holds it.".into()));
+        if !is_mod && perms.contains(Permissions::ADMINISTRATOR) {
+            probs.push((Bad, format!("{name} has Administrator"), "It is not a mod role. Check who holds it.".into()));
         }
     }
     if h.unmoderatable > 0 {
@@ -166,7 +174,7 @@ pub fn health_lines(h: &HealthInput) -> (Vec<HealthLine>, Vec<HealthLine>) {
         line(!h.verification_level_medium_or_higher, "Verification level", "Medium or higher.", "Below medium. Raise it in server settings."),
         line(h.admin_members > 5, "Administrators", &format!("{} roles, {} members.", h.admin_roles, h.admin_members), &format!("{} members have Administrator.", h.admin_members)),
         line(h.verify_on_without_quarantine, "Quarantine for verification", "Ready.", "Verification is on but no quarantine role is set."),
-        line(h.lockdown_channels_empty, "Lockdown channels", "Set.", "No channels listed for /lockdown server."),
+        line(h.lockdown_channels_empty, "Lockdown channels", "Set.", "No lockdown channels set."),
     ];
     (probs, setup)
 }
@@ -265,9 +273,24 @@ mod tests {
         let a2 = ow(1, false, Permissions::VIEW_CHANNEL, LOCK_DENY);
         let b2 = ow(2, true, Permissions::SEND_MESSAGES, Permissions::empty());
         let c = ow(5, false, STAFF_ALLOW, Permissions::empty());
-        let (set, del) = restore_plan(&[a.clone(), b.clone()], &[a2, b2, c.clone()]);
+        let (set, del) = restore_plan(&[a.clone(), b.clone()], &[a2, b2, c.clone()], None);
         assert_eq!(set, vec![a, b]);
         assert_eq!(del, vec![c]);
+    }
+
+    #[test]
+    fn lockdown_restore_keeps_quarantine_overwrite() {
+        let ev = ow(1, false, Permissions::empty(), Permissions::empty());
+        let ev2 = ow(1, false, Permissions::empty(), LOCK_DENY);
+        let q = ow(7, false, Permissions::empty(), Permissions::VIEW_CHANNEL);
+        let (set, del) = restore_plan(std::slice::from_ref(&ev), &[ev2.clone(), q.clone()], Some(7));
+        assert_eq!(set, vec![ev.clone()]);
+        assert!(del.is_empty());
+        // saved before the lockdown and changed since: still left alone
+        let q_old = ow(7, false, Permissions::empty(), Permissions::empty());
+        let (set, del) = restore_plan(&[ev.clone(), q_old], &[ev2, q], Some(7));
+        assert_eq!(set, vec![ev]);
+        assert!(del.is_empty());
     }
 
     fn good() -> HealthInput {
@@ -306,6 +329,16 @@ mod tests {
         assert_eq!(probs.len(), 1);
         assert_eq!(probs[0].0, Health::Bad);
         assert!(probs[0].1.contains("Helper"));
+
+        // Other dangerous bits on a non-mod role are not flagged; only Administrator is.
+        let mut h = good();
+        h.roles.push(("Helper".into(), Permissions::MANAGE_ROLES | Permissions::BAN_MEMBERS, false));
+        assert!(health_lines(&h).0.is_empty());
+
+        let mut h = good();
+        h.lockdown_channels_empty = true;
+        let (_, setup) = health_lines(&h);
+        assert!(setup.iter().any(|l| l.0 == Health::Warn && l.2 == "No lockdown channels set."));
 
         let mut h = good();
         h.unmoderatable = 12;

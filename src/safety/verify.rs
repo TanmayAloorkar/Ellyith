@@ -21,6 +21,8 @@ use std::time::{Duration, Instant};
 const VERIFY_EMOJI: &str = "✅";
 const COOLDOWN: Duration = Duration::from_secs(60);
 const MAX_QUESTIONS: usize = 5;
+// The panel role select shows at most 25.
+const MAX_ROLES: usize = 25;
 const NEED_CHANNEL: &str = "Pick a verify channel first.";
 const WAIT: &str = "Some answers weren't right. Try again in 1 minute.";
 
@@ -89,7 +91,7 @@ async fn say(ctx: &serenity::Context, ci: &ComponentInteraction, e: CreateEmbed)
 
 /// Verify button. Button mode defers then releases; quiz mode opens the pop-up at once.
 pub async fn on_press(ctx: &serenity::Context, data: &Data, ci: &ComponentInteraction) -> Result<(), Error> {
-    let Some(gid) = ci.guild_id else { return say(ctx, ci, note("Can't do that", "Use this button in the server.")).await };
+    let Some(gid) = ci.guild_id else { return say(ctx, ci, reply::refused("Use this button in the server.", false)).await };
     let s = store::get_settings(&data.db, gid.get() as i64).await?;
     let Some(row) = pending(data, gid, ci.user.id).await? else { return say(ctx, ci, already()).await };
     if s.verify_mode != "quiz" {
@@ -107,7 +109,7 @@ pub async fn on_press(ctx: &serenity::Context, data: &Data, ci: &ComponentIntera
     }
     match quiz_modal(&s) {
         Some(m) => ci.create_response(&ctx.http, CreateInteractionResponse::Modal(m)).await?,
-        None => say(ctx, ci, note("Can't do that", "Verification isn't set up yet. Ask a moderator.")).await?,
+        None => say(ctx, ci, reply::refused("Verification isn't set up yet. Ask a moderator.", false)).await?,
     }
     Ok(())
 }
@@ -228,10 +230,7 @@ pub async fn set_roles_core(inv: &Invoker<'_>, op: RoleOp) -> Result<CreateEmbed
     match op {
         RoleOp::Add(r) => {
             check_roles(inv, &[r]).await?;
-            let id = r.get() as i64;
-            if !s.verify_roles.contains(&id) {
-                s.verify_roles.push(id);
-            }
+            add_role(&mut s.verify_roles, r.get() as i64)?;
         }
         RoleOp::Set(roles) => {
             check_roles(inv, &roles).await?;
@@ -243,6 +242,24 @@ pub async fn set_roles_core(inv: &Invoker<'_>, op: RoleOp) -> Result<CreateEmbed
     store::save_settings(&inv.data.db, &s).await?;
     let roles = if s.verify_roles.is_empty() { "none".to_string() } else { s.verify_roles.iter().map(|r| format!("<@&{r}>")).collect::<Vec<_>>().join(" ") };
     Ok(cfg("👋 Verified roles saved", &[("Roles", roles)]))
+}
+
+fn add_role(roles: &mut Vec<i64>, id: i64) -> Result<(), UserError> {
+    if !roles.contains(&id) {
+        if roles.len() >= MAX_ROLES {
+            return Err(UserError("At most 25 verified roles.".into()));
+        }
+        roles.push(id);
+    }
+    Ok(())
+}
+
+/// Quiz mode needs a question to show.
+fn check_questions(mode: &str, questions: &[String]) -> Result<(), UserError> {
+    if mode == "quiz" && questions.is_empty() {
+        return Err(UserError("Switch the method off quiz first, or keep at least one question.".into()));
+    }
+    Ok(())
 }
 
 /// Lines are `question | expected answer` separated by `;`. Errors before anything is saved.
@@ -272,6 +289,7 @@ pub async fn set_question_lines_core(inv: &Invoker<'_>, lines: &[String]) -> Res
 
 async fn save_questions(inv: &Invoker<'_>, parsed: (Vec<String>, Vec<String>)) -> Result<CreateEmbed, Error> {
     let mut s = load(inv).await?;
+    check_questions(&s.verify_mode, &parsed.0)?;
     (s.quiz_questions, s.quiz_answers) = parsed;
     store::save_settings(&inv.data.db, &s).await?;
     let list = if s.quiz_questions.is_empty() {
@@ -373,6 +391,25 @@ mod tests {
         assert!(!cooling(&mut m, (1, 3), t0 + Duration::from_secs(30)));
         assert!(!cooling(&mut m, (1, 2), t0 + Duration::from_secs(61)));
         assert!(m.is_empty());
+    }
+
+    #[test]
+    fn add_role_caps_at_25() {
+        let mut v: Vec<i64> = (0..24).collect();
+        add_role(&mut v, 100).unwrap();
+        add_role(&mut v, 100).unwrap(); // already there: no-op even when full
+        assert_eq!(v.len(), 25);
+        assert_eq!(add_role(&mut v, 101).unwrap_err().0, "At most 25 verified roles.");
+        assert_eq!(v.len(), 25);
+    }
+
+    #[test]
+    fn questions_kept_in_quiz_mode() {
+        let msg = "Switch the method off quiz first, or keep at least one question.";
+        assert_eq!(check_questions("quiz", &[]).unwrap_err().0, msg);
+        assert!(check_questions("quiz", &["Q?".into()]).is_ok());
+        assert!(check_questions("button", &[]).is_ok());
+        assert!(check_questions("off", &[]).is_ok());
     }
 
     #[test]

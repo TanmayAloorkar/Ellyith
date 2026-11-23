@@ -11,7 +11,7 @@ use crate::moderation::perms::authorize;
 use crate::moderation::purge::{self, parse_amount};
 use crate::reply::{refused, Tone};
 use crate::safety::health::health_core;
-use crate::safety::lockdown::{end_core, start_core};
+use crate::safety::lockdown::{end_core, require_manage_channels, start_core};
 use crate::safety::quarantine::{card_for, deny, handled_card, list_core, quarantine_core, release_core};
 use crate::safety::store;
 use crate::safety::verify;
@@ -267,12 +267,24 @@ async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIntera
         PanelId::Verify => return verify::on_press(ctx, data, ci).await,
         PanelId::ReviewPick => return on_review_pick(ctx, data, ci).await,
         PanelId::Action(Action::WaitingReview) => {
+            // Permission check and DB reads can pass 3 s: defer in the same shape `show` would answer in.
+            let defer = if in_ephemeral {
+                CreateInteractionResponse::Acknowledge
+            } else {
+                CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new().ephemeral(true))
+            };
+            ci.create_response(&ctx.http, defer).await?;
             let inv = Invoker::from_interaction(ctx, data, ci.guild_id.expect("checked in handle"), &ci.user);
-            show(waiting_review(&inv, ctx).await)
+            let (e, rows) = waiting_review(&inv, ctx).await;
+            ci.edit_response(&ctx.http, EditInteractionResponse::new().embed(e).components(rows).allowed_mentions(CreateAllowedMentions::new())).await?;
+            return Ok(());
         }
         PanelId::Action(Action::Lockdown) => {
+            let inv = Invoker::from_interaction(ctx, data, ci.guild_id.expect("checked in handle"), &ci.user);
             let s = store::get_settings(&data.db, data.home_guild.get() as i64).await?;
-            if s.lockdown_channels.is_empty() {
+            if let Err(e) = require_manage_channels(&inv).await {
+                show((outcome(Action::Lockdown, Err(e)), vec![view::back_row()]))
+            } else if s.lockdown_channels.is_empty() {
                 show((refused("No lockdown channels are set. Add them in Config → Lockdown.", false), vec![view::back_row()]))
             } else {
                 let m = modal_with(Action::Lockdown, None, None, Some(lockdown_title(s.lockdown_channels.len())), Some(&s.lockdown_message)).expect("lockdown has inputs");

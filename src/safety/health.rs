@@ -53,7 +53,8 @@ pub async fn health_core(inv: &Invoker<'_>) -> Result<CreateEmbed, Error> {
         let g = inv.ctx.cache.guild(inv.guild_id).ok_or("guild not in cache")?;
         let everyone = g.roles.get(&RoleId::new(inv.guild_id.get())).map(|r| r.permissions).unwrap_or_default();
         let is_mod = |id: &RoleId| mod_ids.contains(&(id.get() as i64));
-        let roles = g.roles.values().filter(|r| r.id.get() != inv.guild_id.get() && !r.managed).map(|r| (r.name.to_string(), r.permissions, is_mod(&r.id))).collect();
+        // Managed roles count too (an integration can hold Administrator), except the bot's own.
+        let roles = g.roles.values().filter(|r| r.id.get() != inv.guild_id.get() && r.tags.bot_id != Some(bot_id)).map(|r| (r.name.to_string(), r.permissions, is_mod(&r.id))).collect();
         let mod_roles = g.roles.values().filter(|r| is_mod(&r.id)).map(|r| r.name.to_string()).collect();
         let admin: Vec<RoleId> = g.roles.values().filter(|r| r.permissions.administrator()).map(|r| r.id).collect();
         // Admin members: cached members holding an Administrator role; the owner counts only if they hold one.

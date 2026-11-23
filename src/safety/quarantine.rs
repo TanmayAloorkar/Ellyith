@@ -433,8 +433,25 @@ pub async fn setup_sync_counts(inv: &Invoker<'_>) -> Result<(usize, Vec<String>)
     sync(inv.ctx, inv.guild_id, role, &s).await
 }
 
+/// Release removes only the current quarantine role, so it can't change while anyone holds the old one.
+/// `new` None = a role about to be created.
+pub fn role_change_check(current: Option<i64>, new: Option<i64>, anyone_quarantined: bool) -> Result<(), UserError> {
+    if anyone_quarantined && (new.is_none() || current != new) {
+        return Err(UserError("Release everyone in quarantine before changing the quarantine role.".into()));
+    }
+    Ok(())
+}
+
+pub async fn require_role_change_ok(inv: &Invoker<'_>, new: Option<i64>) -> Result<(), Error> {
+    let gid = inv.guild_id.get() as i64;
+    let current = store::get_settings(&inv.data.db, gid).await?.quarantine_role_id;
+    let anyone = !store::quarantine_list(&inv.data.db, gid).await?.is_empty();
+    Ok(role_change_check(current, new, anyone)?)
+}
+
 pub async fn create_role(inv: &Invoker<'_>) -> Result<CreateEmbed, Error> {
     require_manage_server(inv).await?;
+    require_role_change_ok(inv, None).await?;
     let top = bot_top(inv.ctx, inv.guild_id).await?;
     let builder = EditRole::new().name("Quarantined").permissions(Permissions::empty()).audit_log_reason("Quarantine setup");
     let role = inv.guild_id.create_role(inv.ctx, builder).await.map_err(discord_error)?;
@@ -535,6 +552,17 @@ mod tests {
             "That role has its own permissions; pick one without any."
         );
         assert!(validate_role(&role(3, false, Permissions::VIEW_CHANNEL), everyone, 10).is_ok());
+    }
+
+    #[test]
+    fn role_change_refused_while_quarantined() {
+        let msg = "Release everyone in quarantine before changing the quarantine role.";
+        assert_eq!(role_change_check(Some(1), Some(2), true).unwrap_err().0, msg);
+        assert_eq!(role_change_check(Some(1), None, true).unwrap_err().0, msg);
+        assert_eq!(role_change_check(None, None, true).unwrap_err().0, msg);
+        assert!(role_change_check(Some(1), Some(1), true).is_ok());
+        assert!(role_change_check(Some(1), Some(2), false).is_ok());
+        assert!(role_change_check(Some(1), None, false).is_ok());
     }
 
     #[test]

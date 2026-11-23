@@ -2,13 +2,16 @@
 use crate::invoker::Invoker;
 use crate::moderation::perms::require_manage_server;
 use crate::reply::{self, Tone};
-use crate::safety::quarantine::{bot_top, create_role, list_core, quarantine_core, release_core, setup_sync, setup_sync_counts, sync_lines, validate_role};
+use crate::safety::quarantine::{
+    bot_top, create_role, list_core, quarantine_core, release_core, require_role_change_ok, setup_sync, setup_sync_counts, sync_lines, validate_role,
+};
 use crate::safety::store;
 use crate::{Context, Error, UserError};
 use poise::serenity_prelude::{ChannelId, CreateEmbed, GuildChannel, Role, RoleId, User};
 
 pub async fn set_role_core(inv: &Invoker<'_>, role: RoleId) -> Result<CreateEmbed, Error> {
     require_manage_server(inv).await?;
+    require_role_change_ok(inv, Some(role.get() as i64)).await?;
     let top = bot_top(inv.ctx, inv.guild_id).await?;
     {
         let g = inv.ctx.cache.guild(inv.guild_id).ok_or("guild not in cache")?;
