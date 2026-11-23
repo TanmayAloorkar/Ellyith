@@ -197,49 +197,63 @@ async fn handle_entry(ctx: &serenity::Context, data: &Data, guild: GuildId, entr
     count(ctx, data, guild, actor, kind, entry_name(kind, entry)).await
 }
 
-/// Remove every role below the bot's top role, store them, and post the alert pinging the owner.
-pub async fn strip(ctx: &serenity::Context, data: &Data, guild: GuildId, user: UserId, what: String, names: Option<(&str, Vec<String>)>) -> Result<(), Error> {
+/// Roles to remove and keep, and the Done text when the edit succeeds.
+/// Discord checks only the roles being changed, so everything below the bot goes even when a higher role stays.
+pub fn plan_strip(roles: &[RoleInfo], bot_top: u16) -> (Vec<u64>, Vec<u64>, String) {
+    let (removable, kept) = roles_to_save(roles, bot_top);
+    let blocked = roles.iter().any(|r| r.position >= bot_top);
+    let done = match (removable.len(), blocked) {
+        (0, true) => HIERARCHY.to_string(),
+        (0, false) => "No roles to remove.".to_string(),
+        (n, true) => format!("Removed {n} roles; could not remove the rest: their top role is above the bot's"),
+        (n, false) => format!("Removed {n} roles."),
+    };
+    (removable, kept, done)
+}
+
+/// Strip the roles; returns (done, removed, strip id, name for the Ban button).
+async fn strip_roles(ctx: &serenity::Context, data: &Data, guild: GuildId, user: UserId, what: &str) -> Result<(String, Vec<i64>, i64, String), Error> {
     let gid = guild.get() as i64;
     let top = bot_top(ctx, guild).await?;
-    let member = match guild.member(ctx, user).await {
-        Ok(m) => Some(m),
-        Err(e) if is_absent(&e) => None,
+    let m = match guild.member(ctx, user).await {
+        Ok(m) => m,
+        Err(e) if is_absent(&e) => {
+            let name = user.to_user(ctx).await.map(|u| u.name).unwrap_or_else(|_| user.to_string());
+            let id = store::record_strip(&data.db, gid, user.get() as i64, &[], what).await?;
+            return Ok(("They are no longer in the server.".into(), vec![], id, name));
+        }
         Err(e) => return Err(e.into()),
     };
-    let name = match &member {
-        Some(m) => m.user.name.clone(),
-        None => user.to_user(ctx).await.map(|u| u.name).unwrap_or_else(|_| user.to_string()),
+    let infos: Vec<RoleInfo> = {
+        let g = ctx.cache.guild(guild).ok_or("guild not in cache")?;
+        m.roles.iter().filter_map(|r| g.roles.get(r)).map(|r| RoleInfo { id: r.id.get(), position: r.position, managed: r.managed }).collect()
     };
-    let (done, removed, strip_id) = match member {
-        None => ("They are no longer in the server.".to_string(), vec![], store::record_strip(&data.db, gid, user.get() as i64, &[], &what).await?),
-        Some(m) => {
-            let (infos, their_top) = {
-                let g = ctx.cache.guild(guild).ok_or("guild not in cache")?;
-                let roles: Vec<RoleInfo> = m.roles.iter().filter_map(|r| g.roles.get(r)).map(|r| RoleInfo { id: r.id.get(), position: r.position, managed: r.managed }).collect();
-                let their_top = roles.iter().map(|r| r.position).max().unwrap_or(0);
-                (roles, their_top)
-            };
-            if their_top >= top {
-                (HIERARCHY.to_string(), vec![], store::record_strip(&data.db, gid, user.get() as i64, &[], &what).await?)
-            } else {
-                let (removable, kept) = roles_to_save(&infos, top);
-                let removed: Vec<i64> = removable.iter().map(|r| *r as i64).collect();
-                // Stored before Discord removes them, so they can always be given back.
-                let id = store::record_strip(&data.db, gid, user.get() as i64, &removed, &what).await?;
-                if removed.is_empty() {
-                    ("No roles to remove.".to_string(), removed, id)
-                } else {
-                    let audit = truncate(&format!("Anti-nuke: {what}"), 512);
-                    let edit = EditMember::new().roles(kept.into_iter().map(RoleId::new)).audit_log_reason(&audit);
-                    match guild.edit_member(ctx, user, edit).await {
-                        Ok(_) => (format!("Removed {} roles.", removed.len()), removed, id),
-                        Err(e) => {
-                            tracing::warn!("anti-nuke strip of {user} in {guild} failed: {e}");
-                            (format!("Could not remove roles: {e}"), vec![], id)
-                        }
-                    }
-                }
-            }
+    let (removable, kept, done) = plan_strip(&infos, top);
+    let removed: Vec<i64> = removable.iter().map(|r| *r as i64).collect();
+    // Stored before Discord removes them, so they can always be given back.
+    let id = store::record_strip(&data.db, gid, user.get() as i64, &removed, what).await?;
+    if removed.is_empty() {
+        return Ok((done, removed, id, m.user.name));
+    }
+    let audit = truncate(&format!("Anti-nuke: {what}"), 512);
+    let edit = EditMember::new().roles(kept.into_iter().map(RoleId::new)).audit_log_reason(&audit);
+    match guild.edit_member(ctx, user, edit).await {
+        Ok(_) => Ok((done, removed, id, m.user.name)),
+        Err(e) => {
+            tracing::warn!("anti-nuke strip of {user} in {guild} failed: {e}");
+            Ok((format!("Could not remove roles: {e}"), vec![], id, m.user.name))
+        }
+    }
+}
+
+/// Remove every role below the bot's top role, store them, and post the alert pinging the owner.
+/// The alert is posted even when stripping fails; without a stored strip it has no buttons.
+pub async fn strip(ctx: &serenity::Context, data: &Data, guild: GuildId, user: UserId, what: String, names: Option<(&str, Vec<String>)>) -> Result<(), Error> {
+    let (done, removed, rows) = match strip_roles(ctx, data, guild, user, &what).await {
+        Ok((done, removed, id, name)) => (done, removed, buttons(id, &name)),
+        Err(e) => {
+            tracing::warn!("anti-nuke strip of {user} in {guild} failed: {e}");
+            (format!("Could not remove roles: {e}"), vec![], vec![])
         }
     };
     let owner = ctx.cache.guild(guild).map(|g| g.owner_id).ok_or("guild not in cache")?;
@@ -247,7 +261,7 @@ pub async fn strip(ctx: &serenity::Context, data: &Data, guild: GuildId, user: U
     let msg = CreateMessage::new()
         .content(format!("<@{owner}>"))
         .embed(alert_embed(user, &what, &done, names, &removed))
-        .components(buttons(strip_id, &name))
+        .components(rows)
         .allowed_mentions(CreateAllowedMentions::new().users([owner]));
     send_log_message(&ctx.http, &data.db, guild, LogCategory::ModActions, msg).await;
     Ok(())
@@ -275,19 +289,28 @@ pub async fn press(ctx: &serenity::Context, data: &Data, guild: GuildId, presser
         execute(ctx, data, req).await?;
         return Ok(reply::done(Tone::Safety, "🔨 Banned", &[user], None));
     }
-    if row.restored {
-        return Err(UserError("Those roles were already given back.".into()).into());
+    // Claim first so two presses can't both restore.
+    if !store::mark_strip_restored(&data.db, strip_id).await? {
+        return Err(UserError("Roles were already given back.".into()).into());
     }
-    let m = guild.member(ctx, target).await.map_err(|e| if is_absent(&e) { UserError("They are no longer in the server.".into()).into() } else { Error::from(e) })?;
-    let mut roles: Vec<RoleId> = {
-        let g = ctx.cache.guild(guild).ok_or("guild not in cache")?;
-        // Roles deleted since are skipped.
-        m.roles.iter().copied().chain(row.roles.iter().map(|r| RoleId::new(*r as u64)).filter(|r| g.roles.contains_key(r))).collect()
-    };
-    roles.sort();
-    roles.dedup();
-    guild.edit_member(ctx, target, EditMember::new().roles(roles).audit_log_reason("Anti-nuke: roles given back")).await.map_err(discord_error)?;
-    store::mark_strip_restored(&data.db, strip_id).await?;
+    let res: Result<(), Error> = async {
+        let m = guild.member(ctx, target).await.map_err(|e| if is_absent(&e) { UserError("They are no longer in the server.".into()).into() } else { Error::from(e) })?;
+        let mut roles: Vec<RoleId> = {
+            let g = ctx.cache.guild(guild).ok_or("guild not in cache")?;
+            // Roles deleted since are skipped.
+            m.roles.iter().copied().chain(row.roles.iter().map(|r| RoleId::new(*r as u64)).filter(|r| g.roles.contains_key(r))).collect()
+        };
+        roles.sort();
+        roles.dedup();
+        guild.edit_member(ctx, target, EditMember::new().roles(roles).audit_log_reason("Anti-nuke: roles given back")).await.map_err(discord_error)?;
+        Ok(())
+    }
+    .await;
+    if let Err(e) = res {
+        // Release the claim so the stored roles can still be given back.
+        store::unmark_strip_restored(&data.db, strip_id).await?;
+        return Err(e);
+    }
     Ok(reply::done(Tone::Safety, "↩️ Roles given back", &[user, ("Roles", row.roles.len().to_string())], None))
 }
 
@@ -328,6 +351,25 @@ mod tests {
         assert_eq!(nuke_kind(PunishSource::Command, CaseKind::Tempban), Some(NukeKind::Ban));
         assert_eq!(nuke_kind(PunishSource::Command, CaseKind::Warn), None);
         assert_eq!(nuke_kind(PunishSource::Command, CaseKind::Timeout), None);
+    }
+
+    #[test]
+    fn strip_plan() {
+        let r = |id, position, managed| RoleInfo { id, position, managed };
+        // All removable; a managed role below the bot stays but is not a hierarchy failure.
+        let (rm, kept, done) = plan_strip(&[r(1, 2, false), r(2, 3, false), r(3, 1, true)], 5);
+        assert_eq!((rm, kept, done.as_str()), (vec![1, 2], vec![3], "Removed 2 roles."));
+        // Partial: a role below the bot still goes when a higher one stays.
+        let (rm, kept, done) = plan_strip(&[r(1, 2, false), r(2, 7, false)], 5);
+        assert_eq!((rm, kept, done.as_str()), (vec![1], vec![2], "Removed 1 roles; could not remove the rest: their top role is above the bot's"));
+        // None removable.
+        let (rm, _, done) = plan_strip(&[r(2, 7, false), r(3, 5, false)], 5);
+        assert!(rm.is_empty());
+        assert_eq!(done, HIERARCHY);
+        // No roles.
+        let (rm, _, done) = plan_strip(&[], 5);
+        assert!(rm.is_empty());
+        assert_eq!(done, "No roles to remove.");
     }
 
     #[test]

@@ -170,7 +170,14 @@ pub async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIn
             }
             ProtId::Alt(act, user) => alt_press(ctx, data, ci, &inv, act, user).await,
             ProtId::NukeRestore(strip) => antinuke::press(ctx, data, guild, ci.user.id, strip, false).await,
-            ProtId::NukeBan(strip) => antinuke::press(ctx, data, guild, ci.user.id, strip, true).await,
+            ProtId::NukeBan(strip) => {
+                let embed = antinuke::press(ctx, data, guild, ci.user.id, strip, true).await?;
+                // Banned: the alert loses its buttons so it can't be pressed twice.
+                if let Err(e) = ci.channel_id.edit_message(ctx, ci.message.id, EditMessage::new().components(vec![])).await {
+                    tracing::warn!("clearing anti-nuke alert buttons failed: {e}");
+                }
+                Ok(embed)
+            }
             ProtId::RaidBulkConfirm(_) | ProtId::ReviewPage(..) => unreachable!("answered above"),
         }
     }

@@ -257,3 +257,9 @@ pub async fn get_strip(db: &PgPool, id: i64) -> Result<Option<StripRow>, sqlx::E
 pub async fn mark_strip_restored(db: &PgPool, id: i64) -> Result<bool, sqlx::Error> {
     Ok(sqlx::query("UPDATE protection_strips SET restored=TRUE WHERE id=$1 AND NOT restored").bind(id).execute(db).await?.rows_affected() > 0)
 }
+
+/// Undo a claim made by `mark_strip_restored` when giving the roles back failed.
+pub async fn unmark_strip_restored(db: &PgPool, id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE protection_strips SET restored=FALSE WHERE id=$1").bind(id).execute(db).await?;
+    Ok(())
+}
