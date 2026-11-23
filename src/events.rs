@@ -2,7 +2,7 @@ use crate::automod::engine;
 use crate::moderation::jobs::{self, JobKind};
 use crate::logging::{audit, messages};
 use crate::moderation::nickname;
-use crate::protection::invites;
+use crate::protection::{invites, join};
 use crate::safety::quarantine;
 use crate::{Data, Error};
 use poise::serenity_prelude as serenity;
@@ -23,8 +23,9 @@ pub async fn event_handler(
     // Enforcement failures are logged, never propagated out of the handler.
     match event {
         serenity::FullEvent::GuildMemberAddition { new_member } => {
+            // Raid, gate and alt run first; a member they quarantined, kicked or banned skips verification.
             // A member just quarantined skips the nickname filter.
-            if !quarantine::on_member_join(ctx, data, new_member).await {
+            if !join::on_join(ctx, data, new_member).await && !quarantine::on_member_join(ctx, data, new_member).await {
                 check_member(ctx, data, new_member).await;
             }
             audit::on_join(ctx, data, new_member).await

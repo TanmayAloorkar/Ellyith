@@ -137,7 +137,7 @@ fn not_on() -> Error {
     UserError(NOT_ON.into()).into()
 }
 
-fn button(id: ProtId, label: &str, emoji: &str, style: ButtonStyle) -> CreateButton {
+pub(super) fn button(id: ProtId, label: &str, emoji: &str, style: ButtonStyle) -> CreateButton {
     CreateButton::new(PanelId::Protection(id).encode()).label(label).emoji(serenity::ReactionType::Unicode(emoji.into())).style(style)
 }
 

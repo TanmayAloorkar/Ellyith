@@ -1,4 +1,6 @@
+pub mod alts;
 pub mod invites;
+pub mod join;
 pub mod logic;
 pub mod raid;
 pub mod store;

@@ -165,7 +165,19 @@ pub enum ProtId {
     ReviewDenyRest(i64),
     /// Show this page of the approve select.
     ReviewPage(i64, usize),
+    /// A button on an alt or new-account card, for that user.
+    Alt(AltAct, UserId),
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AltAct {
+    Approve,
+    Quarantine,
+    Kick,
+    Ban,
+}
+
+const ALT_ACTS: [(AltAct, &str); 4] = [(AltAct::Approve, "a"), (AltAct::Quarantine, "q"), (AltAct::Kick, "k"), (AltAct::Ban, "b")];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelId {
@@ -360,6 +372,7 @@ impl ProtId {
             ProtId::ReviewApproveAll(r) => format!("mp:pr:aa:{r}"),
             ProtId::ReviewDenyRest(r) => format!("mp:pr:dr:{r}"),
             ProtId::ReviewPage(r, p) => format!("mp:pr:rp:{r}:{p}"),
+            ProtId::Alt(a, u) => format!("mp:pr:al:{}:{}", tok(&ALT_ACTS, *a), u.get()),
         }
     }
 
@@ -372,6 +385,7 @@ impl ProtId {
             ["aa", r] => num(r).map(ProtId::ReviewApproveAll),
             ["dr", r] => num(r).map(ProtId::ReviewDenyRest),
             ["rp", r, p] => Some(ProtId::ReviewPage(num(r)?, num(p)?)),
+            ["al", a, u] => Some(ProtId::Alt(untok(&ALT_ACTS, a)?, UserId::new(num::<u64>(u).filter(|n| *n > 0)?))),
             _ => None,
         }
     }
@@ -558,6 +572,10 @@ mod tests {
                 ProtId::ReviewDenyRest(7),
                 ProtId::ReviewPage(i64::MAX, 3),
                 ProtId::ReviewPage(1, 0),
+                ProtId::Alt(AltAct::Approve, big_u),
+                ProtId::Alt(AltAct::Quarantine, UserId::new(1)),
+                ProtId::Alt(AltAct::Kick, big_u),
+                ProtId::Alt(AltAct::Ban, big_u),
             ]
             .map(PanelId::Protection),
         );
@@ -579,7 +597,7 @@ mod tests {
         assert_eq!(PanelId::Review(false, UserId::new(7)).encode(), "mp:rv:d:7");
         assert_eq!(PanelId::Protection(ProtId::ReviewApprove(12, 1)).encode(), "mp:pr:ra:12:1");
         assert_eq!(PanelId::Protection(ProtId::RaidBulkConfirm(true)).encode(), "mp:pr:rc:1");
-        for junk in ["", "mp:", "mp:zz", "mp:m:kick:abc:-", "other:home", "mp:c:members:extra", "mp:m:kick:0:-", "mp:p:move:+5", "mp:g", "mp:g:o:zz", "mp:g:ds:2", "mp:g:vm:3", "mp:g:vr:2", "mp:g:qd:x", "mp:g:lh:nope", "mp:g:dt:ban:x", "mp:g:dt:note", "mp:rv:x:1", "mp:z", "mp:z:o:nope", "mp:z:e:words:2", "mp:z:e:words", "mp:z:f:zz", "mp:z:p:x", "mp:c:automod:x", "mp:rv:a:0", "mp:rv:a", "mp:pr", "mp:pr:re:x", "mp:pr:rb:2", "mp:pr:ra:1", "mp:pr:ra:01:0", "mp:pr:ra:1:-1", "mp:pr:rp:1:00", "mp:pr:aa:", "mp:pr:dr:+1", "mp:pr:aa:99999999999999999999"] {
+        for junk in ["", "mp:", "mp:zz", "mp:m:kick:abc:-", "other:home", "mp:c:members:extra", "mp:m:kick:0:-", "mp:p:move:+5", "mp:g", "mp:g:o:zz", "mp:g:ds:2", "mp:g:vm:3", "mp:g:vr:2", "mp:g:qd:x", "mp:g:lh:nope", "mp:g:dt:ban:x", "mp:g:dt:note", "mp:rv:x:1", "mp:z", "mp:z:o:nope", "mp:z:e:words:2", "mp:z:e:words", "mp:z:f:zz", "mp:z:p:x", "mp:c:automod:x", "mp:rv:a:0", "mp:rv:a", "mp:pr", "mp:pr:re:x", "mp:pr:rb:2", "mp:pr:ra:1", "mp:pr:ra:01:0", "mp:pr:ra:1:-1", "mp:pr:rp:1:00", "mp:pr:aa:", "mp:pr:dr:+1", "mp:pr:aa:99999999999999999999", "mp:pr:al:a:0", "mp:pr:al:x:1", "mp:pr:al:a", "mp:pr:al:b:01"] {
             assert_eq!(PanelId::decode(junk), None, "{junk}");
         }
     }

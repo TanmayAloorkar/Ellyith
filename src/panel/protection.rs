@@ -1,16 +1,17 @@
-//! Protection buttons. Raid alert and raid-ended review presses are mod-only, checked per press like review cards.
+//! Protection buttons. Raid alert, raid-ended review and alt card presses are mod-only, checked per press like review cards.
 use super::flows::{outcome_of, STALE};
-use super::id::{PanelId, ProtId};
+use super::id::{AltAct, PanelId, ProtId};
 use crate::invoker::Invoker;
-use crate::moderation::cases::Actor;
-use crate::moderation::perms::authorize;
-use crate::protection::raid;
+use crate::moderation::actions::{execute, ActionRequest};
+use crate::moderation::cases::{Actor, CaseKind};
+use crate::moderation::perms::{authorize, is_absent};
+use crate::protection::{alts, raid};
 use crate::reply::{self, Tone};
-use crate::safety::quarantine::{deny, release_core};
+use crate::safety::quarantine::{self, deny, release_core, QuarantineReason};
 use crate::{Data, Error, UserError};
 use poise::serenity_prelude::{
     self as serenity, ButtonStyle, ComponentInteraction, ComponentInteractionDataKind, CreateActionRow, CreateAllowedMentions, CreateButton, CreateEmbed,
-    CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage, EditInteractionResponse, EditMessage, Permissions, UserId,
+    CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage, EditInteractionResponse, EditMessage, Permissions, UserId,
 };
 use std::time::Duration;
 
@@ -63,6 +64,42 @@ async fn refresh(ctx: &serenity::Context, data: &Data, ci: &ComponentInteraction
     let ids: Vec<u64> = raid::waiting(data, guild, raid_id).await?.iter().map(|r| r.user_id as u64).collect();
     ci.channel_id.edit_message(ctx, ci.message.id, EditMessage::new().components(raid::review_rows(ctx, guild, raid_id, &ids, page))).await?;
     Ok(())
+}
+
+/// A button on an alt or new-account card. The card loses its buttons and gets a footer saying who did what.
+async fn alt_press(ctx: &serenity::Context, data: &Data, ci: &ComponentInteraction, inv: &Invoker<'_>, act: AltAct, user: UserId) -> Result<CreateEmbed, Error> {
+    let guild = inv.guild_id;
+    let perm = match act {
+        AltAct::Kick => Permissions::KICK_MEMBERS,
+        AltAct::Ban => Permissions::BAN_MEMBERS,
+        AltAct::Approve | AltAct::Quarantine => Permissions::MODERATE_MEMBERS,
+    };
+    authorize(inv, perm, Some(user)).await?;
+    let by = Actor::Moderator(ci.user.id.get() as i64);
+    let done = match act {
+        AltAct::Approve => "✅ Approved",
+        AltAct::Quarantine => {
+            let member = guild.member(ctx, user).await.map_err(|e| if is_absent(&e) { UserError("They are no longer in the server.".into()).into() } else { Error::from(e) })?;
+            quarantine::enter(ctx, data, guild, &member, QuarantineReason::Alt, by, Some(alts::REASON.into()), None).await?;
+            "🚧 Quarantined"
+        }
+        AltAct::Kick | AltAct::Ban => {
+            let kind = if act == AltAct::Ban { CaseKind::Ban } else { CaseKind::Kick };
+            let req = ActionRequest { guild_id: guild, target: user, kind, actor: by, reason: Some(alts::REASON.into()), duration: None, ban_delete_days: 0, log_case: true };
+            execute(ctx, data, req).await?;
+            if act == AltAct::Ban { "🔨 Banned" } else { "👢 Kicked" }
+        }
+    };
+    let footer = format!("{done} by @{} · {}", ci.user.name, chrono::Utc::now().format("%H:%M"));
+    let card = ci.message.embeds.first().cloned().map(|e| CreateEmbed::from(e).footer(CreateEmbedFooter::new(footer)));
+    let mut edit = EditMessage::new().components(vec![]);
+    if let Some(card) = card {
+        edit = edit.embed(card);
+    }
+    if let Err(e) = ci.channel_id.edit_message(ctx, ci.message.id, edit).await {
+        tracing::warn!("marking alt card failed: {e}");
+    }
+    Ok(reply::done(Tone::Safety, done, &[("User", format!("<@{user}>"))], None))
 }
 
 pub async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentInteraction, id: ProtId) -> Result<(), Error> {
@@ -130,6 +167,7 @@ pub async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIn
                 refresh(ctx, data, ci, raid_id, 0).await?;
                 Ok(embed)
             }
+            ProtId::Alt(act, user) => alt_press(ctx, data, ci, &inv, act, user).await,
             ProtId::RaidBulkConfirm(_) | ProtId::ReviewPage(..) => unreachable!("answered above"),
         }
     }
