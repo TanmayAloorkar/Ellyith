@@ -157,9 +157,10 @@ pub enum ProtId {
     /// End raid mode button on the raid alert.
     RaidEnd,
     /// Kick (false) or ban (true) all raiders: asks to confirm.
-    RaidBulk(bool),
+    /// (raid id, ban)
+    RaidBulk(i64, bool),
     /// The confirm button for `RaidBulk`.
-    RaidBulkConfirm(bool),
+    RaidBulkConfirm(i64, bool),
     /// Approve multi-select on the raid-ended message: raid id, page.
     ReviewApprove(i64, usize),
     ReviewApproveAll(i64),
@@ -418,8 +419,8 @@ impl ProtId {
     fn encode(&self) -> String {
         match self {
             ProtId::RaidEnd => "mp:pr:re".into(),
-            ProtId::RaidBulk(ban) => format!("mp:pr:rb:{}", *ban as u8),
-            ProtId::RaidBulkConfirm(ban) => format!("mp:pr:rc:{}", *ban as u8),
+            ProtId::RaidBulk(r, ban) => format!("mp:pr:rb:{r}:{}", *ban as u8),
+            ProtId::RaidBulkConfirm(r, ban) => format!("mp:pr:rc:{r}:{}", *ban as u8),
             ProtId::ReviewApprove(r, p) => format!("mp:pr:ra:{r}:{p}"),
             ProtId::ReviewApproveAll(r) => format!("mp:pr:aa:{r}"),
             ProtId::ReviewDenyRest(r) => format!("mp:pr:dr:{r}"),
@@ -444,8 +445,8 @@ impl ProtId {
     fn decode(parts: &[&str]) -> Option<Self> {
         match parts {
             ["re"] => Some(ProtId::RaidEnd),
-            ["rb", v] => flag(v).map(ProtId::RaidBulk),
-            ["rc", v] => flag(v).map(ProtId::RaidBulkConfirm),
+            ["rb", r, v] => Some(ProtId::RaidBulk(num(r)?, flag(v)?)),
+            ["rc", r, v] => Some(ProtId::RaidBulkConfirm(num(r)?, flag(v)?)),
             ["ra", r, p] => Some(ProtId::ReviewApprove(num(r)?, num(p)?)),
             ["aa", r] => num(r).map(ProtId::ReviewApproveAll),
             ["dr", r] => num(r).map(ProtId::ReviewDenyRest),
@@ -611,10 +612,10 @@ mod tests {
         let big_u = UserId::new(u64::MAX);
         let mut v = vec![
             ProtId::RaidEnd,
-            ProtId::RaidBulk(true),
-            ProtId::RaidBulk(false),
-            ProtId::RaidBulkConfirm(true),
-            ProtId::RaidBulkConfirm(false),
+            ProtId::RaidBulk(i64::MAX, true),
+            ProtId::RaidBulk(1, false),
+            ProtId::RaidBulkConfirm(i64::MAX, true),
+            ProtId::RaidBulkConfirm(0, false),
             ProtId::ReviewApprove(i64::MAX, usize::MAX),
             ProtId::ReviewApprove(1, 0),
             ProtId::ReviewApproveAll(i64::MAX),
@@ -705,8 +706,8 @@ mod tests {
         assert_eq!(PanelId::Review(true, UserId::new(7)).encode(), "mp:rv:a:7");
         assert_eq!(PanelId::Review(false, UserId::new(7)).encode(), "mp:rv:d:7");
         assert_eq!(PanelId::Protection(ProtId::ReviewApprove(12, 1)).encode(), "mp:pr:ra:12:1");
-        assert_eq!(PanelId::Protection(ProtId::RaidBulkConfirm(true)).encode(), "mp:pr:rc:1");
-        for junk in ["", "mp:", "mp:zz", "mp:m:kick:abc:-", "other:home", "mp:c:members:extra", "mp:m:kick:0:-", "mp:p:move:+5", "mp:g", "mp:g:o:zz", "mp:g:ds:2", "mp:g:vm:3", "mp:g:vr:2", "mp:g:qd:x", "mp:g:lh:nope", "mp:g:dt:ban:x", "mp:g:dt:note", "mp:rv:x:1", "mp:z", "mp:z:o:nope", "mp:z:e:words:2", "mp:z:e:words", "mp:z:f:zz", "mp:z:p:x", "mp:c:automod:x", "mp:rv:a:0", "mp:rv:a", "mp:pr", "mp:pr:re:x", "mp:pr:rb:2", "mp:pr:ra:1", "mp:pr:ra:01:0", "mp:pr:ra:1:-1", "mp:pr:rp:1:00", "mp:pr:aa:", "mp:pr:dr:+1", "mp:pr:aa:99999999999999999999", "mp:pr:al:a:0", "mp:pr:al:x:1", "mp:pr:al:a", "mp:pr:al:b:01", "mp:pr:nr", "mp:pr:nr:-1", "mp:pr:nb:01", "mp:pr:nb:1:2"] {
+        assert_eq!(PanelId::Protection(ProtId::RaidBulkConfirm(9, true)).encode(), "mp:pr:rc:9:1");
+        for junk in ["", "mp:", "mp:zz", "mp:m:kick:abc:-", "other:home", "mp:c:members:extra", "mp:m:kick:0:-", "mp:p:move:+5", "mp:g", "mp:g:o:zz", "mp:g:ds:2", "mp:g:vm:3", "mp:g:vr:2", "mp:g:qd:x", "mp:g:lh:nope", "mp:g:dt:ban:x", "mp:g:dt:note", "mp:rv:x:1", "mp:z", "mp:z:o:nope", "mp:z:e:words:2", "mp:z:e:words", "mp:z:f:zz", "mp:z:p:x", "mp:c:automod:x", "mp:rv:a:0", "mp:rv:a", "mp:pr", "mp:pr:re:x", "mp:pr:rb:2", "mp:pr:rb:1", "mp:pr:rb:1:2", "mp:pr:rc:01:1", "mp:pr:ra:1", "mp:pr:ra:01:0", "mp:pr:ra:1:-1", "mp:pr:rp:1:00", "mp:pr:aa:", "mp:pr:dr:+1", "mp:pr:aa:99999999999999999999", "mp:pr:al:a:0", "mp:pr:al:x:1", "mp:pr:al:a", "mp:pr:al:b:01", "mp:pr:nr", "mp:pr:nr:-1", "mp:pr:nb:01", "mp:pr:nb:1:2"] {
             assert_eq!(PanelId::decode(junk), None, "{junk}");
         }
     }

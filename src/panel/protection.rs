@@ -558,13 +558,13 @@ pub async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIn
     let what = PanelId::Protection(id);
     match id {
         // The confirm lives on an ephemeral message: answer by editing it in place.
-        ProtId::RaidBulkConfirm(ban) => {
+        ProtId::RaidBulkConfirm(raid_id, ban) => {
             ci.create_response(&ctx.http, CreateInteractionResponse::Acknowledge).await?;
             // Drop the button first so a second press can't run it twice.
             ci.edit_response(&ctx.http, EditInteractionResponse::new().embed(reply::done(Tone::Safety, "Working…", &[], Some("One raider per second."))).components(vec![])).await?;
             let res = async {
                 authorize(&inv, perm(ban), None).await?;
-                raid::bulk(ctx, data, guild, !ban, by).await
+                raid::bulk(ctx, data, guild, raid_id, !ban, by).await
             }
             .await;
             ci.edit_response(&ctx.http, EditInteractionResponse::new().embed(outcome_of(what, false, res)).components(vec![]).allowed_mentions(CreateAllowedMentions::new())).await?;
@@ -593,11 +593,12 @@ pub async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIn
                 authorize(&inv, Permissions::MODERATE_MEMBERS, None).await?;
                 raid::end(ctx, data, guild, by).await
             }
-            ProtId::RaidBulk(ban) => {
+            ProtId::RaidBulk(raid_id, ban) => {
                 authorize(&inv, perm(ban), None).await?;
+                raid::still_active(data, guild, raid_id).await?;
                 let (title, body) = confirm_text(ban);
                 let label = if ban { "Ban all" } else { "Kick all" };
-                rows.push(CreateActionRow::Buttons(vec![CreateButton::new(PanelId::Protection(ProtId::RaidBulkConfirm(ban)).encode()).label(label).style(ButtonStyle::Danger)]));
+                rows.push(CreateActionRow::Buttons(vec![CreateButton::new(PanelId::Protection(ProtId::RaidBulkConfirm(raid_id, ban)).encode()).label(label).style(ButtonStyle::Danger)]));
                 Ok(reply::done(Tone::Safety, title, &[], None).description(body))
             }
             ProtId::ReviewApprove(raid_id, page) => {
@@ -626,7 +627,7 @@ pub async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIn
                 }
                 Ok(embed)
             }
-            ProtId::RaidBulkConfirm(_) | ProtId::ReviewPage(..) => unreachable!("answered above"),
+            ProtId::RaidBulkConfirm(..) | ProtId::ReviewPage(..) => unreachable!("answered above"),
             _ => unreachable!("category ids answered by on_category"),
         }
     }

@@ -30,30 +30,37 @@ pub async fn on_join(ctx: &serenity::Context, data: &Data, member: &Member) -> b
             return false;
         }
     };
-    let invite = data.protection.invites.resolve_join(ctx, guild).await;
-    let (code, inviter) = (invite.as_ref().map(|i| i.0.as_str()), invite.as_ref().and_then(|i| i.1).map(|u| u as i64));
-    if let Err(e) = store::record_member_invite(&data.db, gid, user.get() as i64, code, inviter).await {
-        tracing::warn!("recording invite of {user} failed: {e}");
-    }
-
+    // The window comes first: a burst must not wait behind the invite fetch.
     let burst = {
         let mut joins = data.protection.joins.lock().unwrap_or_else(|e| e.into_inner());
-        joins.entry(guild.get()).or_default().push(Instant::now(), s.raid_joins.max(1) as usize, s.raid_secs.max(1) as u64)
+        joins.entry(guild.get()).or_default().push(Instant::now(), user.get(), s.raid_joins.max(1) as usize, s.raid_secs.max(1) as u64)
     };
     let mut active = store::active_raid(&data.db, gid).await.unwrap_or_else(|e| {
         tracing::warn!("active raid lookup for {guild} failed: {e}");
         None
     });
-    match &active {
+    // shortcut: no invite tracking during a raid or burst (one serialized HTTP fetch per join); the invite is recorded as unknown.
+    let invite = if active.is_none() && burst.is_none() { data.protection.invites.resolve_join(ctx, guild).await } else { None };
+    let (code, inviter) = (invite.as_ref().map(|i| i.0.as_str()), invite.as_ref().and_then(|i| i.1).map(|u| u as i64));
+    if let Err(e) = store::record_member_invite(&data.db, gid, user.get() as i64, code, inviter).await {
+        tracing::warn!("recording invite of {user} failed: {e}");
+    }
+
+    match (&active, burst) {
         // Only a new burst restarts the auto-end; single joins during a raid do not.
-        Some(r) if burst => {
+        (Some(r), Some(_)) => {
             if let Err(e) = raid::extend(data, r).await {
                 tracing::warn!("extending raid in {guild} failed: {e}");
             }
         }
-        None if burst && s.raid_enabled => {
+        (None, Some(ids)) if s.raid_enabled => {
             active = match raid::start(ctx, data, guild, Actor::AutoPunishment).await {
-                Ok(r) => Some(r),
+                Ok(r) => {
+                    // The burst's earlier joins become raiders too, in the background so this join is not held up.
+                    let (ctx, data, r2) = (ctx.clone(), data.clone(), r.clone());
+                    tokio::spawn(async move { raid::on_burst(&ctx, &data, guild, ids, user, &r2).await });
+                    Some(r)
+                }
                 Err(e) => {
                     // Lost a race with another join's start: that raid is the one to join.
                     if !e.is::<UserError>() {
@@ -66,17 +73,20 @@ pub async fn on_join(ctx: &serenity::Context, data: &Data, member: &Member) -> b
         _ => {}
     }
 
+    // A raider the raid responses did not remove (alert or lockdown only, or a failed action) still meets the gate and alt checks.
+    if let Some(r) = &active {
+        if raid::on_raider(ctx, data, guild, member, r).await {
+            return true;
+        }
+    }
+
     let created = member.user.created_at().unix_timestamp();
     let age_days = (Utc::now().timestamp() - created).max(0) / 86_400;
     let gate = gate_blocks(s.gate_enabled, s.gate_days, age_days);
-    // Scored only when it can matter: raid and gate come first.
-    let score = if active.is_none() && !gate && s.alt_enabled { Some(alts::score_member(ctx, data, member).await) } else { None };
+    // Scored only when it can matter: the gate comes first.
+    let score = if !gate && s.alt_enabled { Some(alts::score_member(ctx, data, member).await) } else { None };
     let alt_over = score.as_ref().is_some_and(|a| a.total >= s.alt_threshold);
-    match decide_join(active.is_some(), gate, alt_over, false, false) {
-        JoinOutcome::Raid => match &active {
-            Some(r) => raid::on_raider(ctx, data, guild, member, r).await,
-            None => false,
-        },
+    match decide_join(false, gate, alt_over, false, false) {
         JoinOutcome::Gate => {
             let created = DateTime::from_timestamp(created, 0).unwrap_or_else(Utc::now);
             match s.gate_action.as_str() {
@@ -111,7 +121,7 @@ pub async fn on_join(ctx: &serenity::Context, data: &Data, member: &Member) -> b
                 false
             }
         }
-        JoinOutcome::Verify | JoinOutcome::Pass => false,
+        JoinOutcome::Raid | JoinOutcome::Verify | JoinOutcome::Pass => false,
     }
 }
 

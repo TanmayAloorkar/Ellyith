@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 pub const REASON: &str = "Raid protection";
 const NOT_ON: &str = "Raid mode is not on.";
 const ALREADY_ON: &str = "Raid mode is already on.";
+const ENDED: &str = "That raid has ended.";
 const EDIT_GAP: Duration = Duration::from_secs(5);
 const PAGE: usize = 25;
 const SHOWN: usize = 10;
@@ -141,11 +142,11 @@ pub(super) fn button(id: ProtId, label: &str, emoji: &str, style: ButtonStyle) -
     CreateButton::new(PanelId::Protection(id).encode()).label(label).emoji(serenity::ReactionType::Unicode(emoji.into())).style(style)
 }
 
-fn alert_buttons() -> Vec<CreateActionRow> {
+fn alert_buttons(raid_id: i64) -> Vec<CreateActionRow> {
     vec![CreateActionRow::Buttons(vec![
         button(ProtId::RaidEnd, "End raid mode", "✅", ButtonStyle::Success),
-        button(ProtId::RaidBulk(false), "Kick all raiders", "👢", ButtonStyle::Secondary),
-        button(ProtId::RaidBulk(true), "Ban all raiders", "🔨", ButtonStyle::Danger),
+        button(ProtId::RaidBulk(raid_id, false), "Kick all raiders", "👢", ButtonStyle::Secondary),
+        button(ProtId::RaidBulk(raid_id, true), "Ban all raiders", "🔨", ButtonStyle::Danger),
     ])]
 }
 
@@ -199,7 +200,14 @@ pub async fn start(ctx: &serenity::Context, data: &Data, guild: GuildId, by: Act
     if s.raid_responses.iter().any(|r| r == "lockdown") {
         match lockdown::start(ctx, data, guild, Actor::System, None, Some(REASON.into())).await {
             Ok(r) => {
-                store::set_raid_lockdown(&data.db, raid.id, true).await?;
+                // The raid is already on: a failed write is retried once, then logged, never returned.
+                let mut saved = store::set_raid_lockdown(&data.db, raid.id, true).await;
+                if saved.is_err() {
+                    saved = store::set_raid_lockdown(&data.db, raid.id, true).await;
+                }
+                if let Err(e) = saved {
+                    tracing::warn!("recording raid lockdown in {guild} failed, ending raid mode will not lift it (use /lockdown end): {e}");
+                }
                 raid.started_lockdown = true;
                 done.lockdown = r.done.len();
             }
@@ -209,16 +217,21 @@ pub async fn start(ctx: &serenity::Context, data: &Data, guild: GuildId, by: Act
     data.protection.raids.lock().unwrap_or_else(|e| e.into_inner()).insert(guild.get(), RaidStats { title: title.clone(), done, joins: VecDeque::new() });
     // The alert is always posted (it carries the controls); the mod-role ping only when "alert" is chosen.
     let embed = alert_embed(&title, 0, 0, &done, Some((ends, s.raid_end_mins)));
-    let mut msg = CreateMessage::new().embed(embed).components(alert_buttons());
+    let mut msg = CreateMessage::new().embed(embed).components(alert_buttons(raid.id));
     if s.raid_responses.iter().any(|r| r == "alert") {
-        let roles = settings::get_or_create(&data.db, gid).await?.mod_roles;
+        let roles = settings::get_or_create(&data.db, gid).await.map(|g| g.mod_roles).unwrap_or_else(|e| {
+            tracing::warn!("raid alert: mod roles for {guild} failed: {e}");
+            vec![]
+        });
         if !roles.is_empty() {
             let content: Vec<String> = roles.iter().map(|r| format!("<@&{r}>")).collect();
             msg = msg.content(content.join(" ")).allowed_mentions(CreateAllowedMentions::new().roles(roles.iter().map(|r| RoleId::new(*r as u64))));
         }
     }
     if let Some(m) = send_log_message(&ctx.http, &data.db, guild, LogCategory::ModActions, msg).await {
-        store::set_raid_alert(&data.db, raid.id, m.channel_id.get() as i64, m.id.get() as i64).await?;
+        if let Err(e) = store::set_raid_alert(&data.db, raid.id, m.channel_id.get() as i64, m.id.get() as i64).await {
+            tracing::warn!("recording raid alert in {guild} failed: {e}");
+        }
         raid.alert_channel = Some(m.channel_id.get() as i64);
         raid.alert_message = Some(m.id.get() as i64);
     }
@@ -255,21 +268,13 @@ pub async fn on_raider(ctx: &serenity::Context, data: &Data, guild: GuildId, mem
                     true
                 }
                 Err(e) => {
-                    tracing::warn!("raid {} of {user} failed: {e}", kind.as_str());
-                    false
+                    // A raider the bot can't remove is still held back.
+                    tracing::warn!("raid {} of {user} failed, quarantining instead: {e}", kind.as_str());
+                    quarantine_raider(ctx, data, guild, member).await
                 }
             }
         }
-        Some(RaiderAction::Quarantine) => match quarantine::enter(ctx, data, guild, member, QuarantineReason::Raid, Actor::AutoPunishment, Some(REASON.into()), None).await {
-            Ok(()) => {
-                with_stats(data, guild, |st| st.done.quarantined += 1);
-                true
-            }
-            Err(e) => {
-                tracing::warn!("raid quarantine of {user} failed: {e}");
-                false
-            }
-        },
+        Some(RaiderAction::Quarantine) => quarantine_raider(ctx, data, guild, member).await,
         None => false,
     };
     if let Err(e) = store::add_raider(&data.db, raid.id, user.get() as i64, created, default_avatar).await {
@@ -278,6 +283,48 @@ pub async fn on_raider(ctx: &serenity::Context, data: &Data, guild: GuildId, mem
     with_stats(data, guild, |st| st.joins.push_back(Instant::now()));
     edit_alert_soon(ctx, data, guild);
     handled
+}
+
+/// Raid quarantine; a member already waiting for verification (an earlier join of the burst) is moved to the raid reason instead.
+async fn quarantine_raider(ctx: &serenity::Context, data: &Data, guild: GuildId, member: &Member) -> bool {
+    let user = member.user.id;
+    let ok = match quarantine::enter(ctx, data, guild, member, QuarantineReason::Raid, Actor::AutoPunishment, Some(REASON.into()), None).await {
+        Ok(()) => true,
+        Err(e) => {
+            let (v, r) = (QuarantineReason::Verification.as_str(), QuarantineReason::Raid.as_str());
+            match safety_store::quarantine_set_reason(&data.db, guild.get() as i64, user.get() as i64, v, r).await {
+                Ok(true) => true,
+                Ok(false) => {
+                    tracing::warn!("raid quarantine of {user} failed: {e}");
+                    false
+                }
+                Err(e2) => {
+                    tracing::warn!("raid quarantine of {user} failed: {e}; moving their verification quarantine failed: {e2}");
+                    false
+                }
+            }
+        }
+    };
+    if ok {
+        with_stats(data, guild, |st| st.done.quarantined += 1);
+    }
+    ok
+}
+
+/// The earlier joins of the burst that started raid mode are raiders too (spec §4); members who already left are skipped.
+pub async fn on_burst(ctx: &serenity::Context, data: &Data, guild: GuildId, mut ids: Vec<u64>, skip: UserId, raid: &RaidRow) {
+    ids.sort_unstable();
+    ids.dedup();
+    for id in ids.into_iter().filter(|i| *i != skip.get()) {
+        match guild.member(ctx, UserId::new(id)).await {
+            Ok(m) if !m.user.bot => {
+                on_raider(ctx, data, guild, &m, raid).await;
+            }
+            Ok(_) => {}
+            Err(e) if is_absent(&e) => {}
+            Err(e) => tracing::warn!("raid: reading burst member {id} failed: {e}"),
+        }
+    }
 }
 
 /// At most one alert edit per 5 s per guild; a skipped edit is queued so the last raider still shows.
@@ -375,13 +422,20 @@ pub async fn end(ctx: &serenity::Context, data: &Data, guild: GuildId, by: Actor
             }
         };
     if let (Some(ch), Some(msg)) = (raid.alert_channel, raid.alert_message) {
-        let count = store::raiders(&data.db, raid.id).await?.len();
+        // The end is claimed: from here failures are logged so "Raid mode ended" still posts.
+        let count = store::raiders(&data.db, raid.id).await.map(|r| r.len()).unwrap_or_else(|e| {
+            tracing::warn!("raid end: raiders of {} failed: {e}", raid.id);
+            0
+        });
         let edit = EditMessage::new().embed(alert_embed(&title, count, recent, &done, None)).components(vec![]);
         if let Err(e) = ChannelId::new(ch as u64).edit_message(ctx, MessageId::new(msg as u64), edit).await {
             tracing::warn!("closing raid alert in {guild} failed: {e}");
         }
     }
-    let waiting = waiting(data, guild, raid.id).await?;
+    let waiting = waiting(data, guild, raid.id).await.unwrap_or_else(|e| {
+        tracing::warn!("raid end: waiting raiders of {} failed: {e}", raid.id);
+        vec![]
+    });
     let embed = reply::done(Tone::Safety, "✅ Raid mode ended", &[], None).description(ended_text(lifted, &waiting, Utc::now()));
     let ids: Vec<u64> = waiting.iter().map(|r| r.user_id as u64).collect();
     let msg = CreateMessage::new().embed(embed.clone()).components(review_rows(ctx, guild, raid.id, &ids, 0));
@@ -403,14 +457,19 @@ pub async fn tick(ctx: &serenity::Context, data: &Data) {
     }
 }
 
-/// Kicks or bans every raider still in the guild, 1 s apart.
+/// The active raid, when it is still raid `raid_id` (buttons carry the raid they were posted for).
+pub async fn still_active(data: &Data, guild: GuildId, raid_id: i64) -> Result<RaidRow, Error> {
+    store::active_raid(&data.db, guild.get() as i64).await?.filter(|r| r.id == raid_id).ok_or_else(|| UserError(ENDED.into()).into())
+}
+
+/// Kicks or bans every raider still waiting in raid quarantine (the review's list), 1 s apart; released raiders are left alone.
 /// PunishSource::RaidBulk: goes straight to `actions::execute`, so it never reaches the anti-nuke counter.
-pub async fn bulk(ctx: &serenity::Context, data: &Data, guild: GuildId, kick: bool, by: Actor) -> Result<CreateEmbed, Error> {
+pub async fn bulk(ctx: &serenity::Context, data: &Data, guild: GuildId, raid_id: i64, kick: bool, by: Actor) -> Result<CreateEmbed, Error> {
     let gid = guild.get() as i64;
-    let raid = store::active_raid(&data.db, gid).await?.ok_or_else(not_on)?;
+    let raid = still_active(data, guild, raid_id).await?;
     let kind = if kick { CaseKind::Kick } else { CaseKind::Ban };
     let (mut done, mut failed, mut first) = (0, 0, true);
-    for r in store::raiders(&data.db, raid.id).await? {
+    for r in waiting(data, guild, raid.id).await? {
         let user = UserId::new(r.user_id as u64);
         match guild.member(ctx, user).await {
             Ok(_) => {}

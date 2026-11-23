@@ -8,22 +8,22 @@ use poise::serenity_prelude::Permissions;
 use super::store::{ProtectionSettings, TrustKind};
 use crate::automod::normalize::{fold, similarity};
 
-/// Sliding window of recent joins for one guild.
+/// Sliding window of recent joins (time, user id) for one guild.
 #[derive(Default)]
-pub struct JoinWindow(VecDeque<Instant>);
+pub struct JoinWindow(VecDeque<(Instant, u64)>);
 
 impl JoinWindow {
-    /// Record a join; true when `joins` joins sit inside the last `secs` seconds.
-    pub fn push(&mut self, now: Instant, joins: usize, secs: u64) -> bool {
+    /// Record a join; when `joins` joins sit inside the last `secs` seconds, the user ids of those joins.
+    pub fn push(&mut self, now: Instant, user: u64, joins: usize, secs: u64) -> Option<Vec<u64>> {
         let span = Duration::from_secs(secs);
-        while self.0.front().is_some_and(|t| now.saturating_duration_since(*t) > span) {
+        while self.0.front().is_some_and(|t| now.saturating_duration_since(t.0) > span) {
             self.0.pop_front();
         }
-        self.0.push_back(now);
+        self.0.push_back((now, user));
         while self.0.len() > joins.max(1) {
             self.0.pop_front();
         }
-        self.0.len() >= joins
+        (self.0.len() >= joins).then(|| self.0.iter().map(|j| j.1).collect())
     }
 
     pub fn recent(&self) -> usize {
@@ -250,13 +250,15 @@ mod tests {
         let t0 = Instant::now();
         let mut w = JoinWindow::default();
         for i in 0..9 {
-            assert!(!w.push(t0 + Duration::from_millis(i * 1000 / 2), 10, 10));
+            assert_eq!(w.push(t0 + Duration::from_millis(i * 1000 / 2), i + 1, 10, 10), None);
         }
-        assert!(w.push(t0 + Duration::from_secs(5), 10, 10));
+        // The tripping join returns every join inside the window, oldest first.
+        assert_eq!(w.push(t0 + Duration::from_secs(5), 10, 10, 10), Some((1..=10).collect()));
         assert!(w.recent() <= 10);
+        assert_eq!(w.push(t0 + Duration::from_secs(6), 11, 10, 10), Some((2..=11).collect()));
         let mut w = JoinWindow::default();
         for i in 0..40 {
-            assert!(!w.push(t0 + Duration::from_secs(i * 3), 10, 10));
+            assert_eq!(w.push(t0 + Duration::from_secs(i * 3), i, 10, 10), None);
         }
     }
 
