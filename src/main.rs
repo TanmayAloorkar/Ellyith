@@ -99,6 +99,7 @@ async fn main() {
                     automod: std::sync::Arc::new(aio_bot::automod::engine::AutoMod::new()),
                 };
                 tokio::spawn(aio_bot::scheduler::run(ctx.clone(), data.clone()));
+                tokio::spawn(aio_bot::automod::scam::run(data.clone()));
                 Ok(data)
             })
         })
