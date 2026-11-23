@@ -19,7 +19,7 @@ impl Tone {
             Tone::NamesVoice | Tone::Channels => 0x5865f2,
             Tone::Records => 0x4e5058,
             Tone::Config => 0x949ba4,
-            Tone::Panel => 0xf0b232,
+            Tone::Panel => 0xbaa3ff,
             Tone::Safety => 0x1abc9c,
         }
     }
@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn builders() {
         assert_eq!(Tone::Members.colour(), 0xda373c);
-        assert_eq!(Tone::Panel.colour(), 0xf0b232);
+        assert_eq!(Tone::Panel.colour(), 0xbaa3ff);
         assert_eq!(Tone::Safety.colour(), 0x1abc9c);
         let e = serde_json::to_value(refused("That member's highest role is at or above yours.", true)).unwrap();
         assert_eq!(e["title"], "Can't do that");
