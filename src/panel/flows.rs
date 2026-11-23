@@ -266,6 +266,10 @@ async fn on_component(ctx: &serenity::Context, data: &Data, ci: &ComponentIntera
             let inv = Invoker::from_interaction(ctx, data, ci.guild_id.expect("checked in handle"), &ci.user);
             show(super::automod::category(&inv).await)
         }
+        PanelId::Category(Category::Protection) => {
+            let inv = Invoker::from_interaction(ctx, data, ci.guild_id.expect("checked in handle"), &ci.user);
+            show(super::protection::category(&inv).await)
+        }
         PanelId::Category(c) => show(view::category(c)),
         PanelId::AutoMod(a) => return super::automod::on_component(ctx, data, ci, a).await,
         PanelId::Config(c) => return super::config::on_component(ctx, data, ci, c).await,
@@ -472,6 +476,9 @@ async fn on_modal(ctx: &serenity::Context, data: &Data, mi: &ModalInteraction) -
     }
     if let Some(PanelId::AutoMod(a)) = decoded {
         return super::automod::on_modal(ctx, data, mi, a).await;
+    }
+    if let Some(PanelId::Protection(p)) = decoded {
+        return super::protection::on_modal(ctx, data, mi, p).await;
     }
     if decoded == Some(PanelId::VerifyQuiz) {
         return verify::on_submit(ctx, data, mi).await;

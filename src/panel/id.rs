@@ -12,6 +12,7 @@ pub enum Category {
     Channels,
     Safety,
     AutoMod,
+    Protection,
     Records,
     Config,
 }
@@ -171,7 +172,52 @@ pub enum ProtId {
     NukeRestore(i64),
     /// Anti-nuke alert: ban the stripped user, for this strip id.
     NukeBan(i64),
+    /// Feature page button.
+    Page(ProtPage),
+    /// Overview button: start (true) or end raid mode.
+    RaidMode(bool),
+    /// Turn on/off button carrying the new value.
+    Toggle(ProtPage, bool),
+    /// Raid responses multi-select.
+    Responses,
+    /// Raid kick/ban filter multi-select.
+    Filter,
+    /// Alt response select.
+    AltResponse,
+    /// Gate action select.
+    GateAction,
+    /// Anti-nuke trusted members user select.
+    TrustUsers,
+    /// Anti-nuke trusted roles role select.
+    TrustRoles,
+    /// Button that opens a pop-up.
+    Form(ProtForm),
+    /// Pop-up submit.
+    Submit(ProtForm),
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtPage {
+    Raid,
+    Alts,
+    Gate,
+    Nuke,
+}
+
+/// Protection pop-ups. Anti-nuke limits are two pop-ups (Discord allows 5 inputs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtForm {
+    RaidSettings,
+    AltPoints,
+    GateSettings,
+    Limits1,
+    Limits2,
+}
+
+pub const PROT_PAGES: [(ProtPage, &str); 4] = [(ProtPage::Raid, "raid"), (ProtPage::Alts, "alts"), (ProtPage::Gate, "gate"), (ProtPage::Nuke, "nuke")];
+
+const PROT_FORMS: [(ProtForm, &str); 5] =
+    [(ProtForm::RaidSettings, "raid"), (ProtForm::AltPoints, "pts"), (ProtForm::GateSettings, "gate"), (ProtForm::Limits1, "lim1"), (ProtForm::Limits2, "lim2")];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AltAct {
@@ -379,6 +425,17 @@ impl ProtId {
             ProtId::Alt(a, u) => format!("mp:pr:al:{}:{}", tok(&ALT_ACTS, *a), u.get()),
             ProtId::NukeRestore(s) => format!("mp:pr:nr:{s}"),
             ProtId::NukeBan(s) => format!("mp:pr:nb:{s}"),
+            ProtId::Page(p) => format!("mp:pr:pg:{}", tok(&PROT_PAGES, *p)),
+            ProtId::RaidMode(v) => format!("mp:pr:rm:{}", *v as u8),
+            ProtId::Toggle(p, v) => format!("mp:pr:tg:{}:{}", tok(&PROT_PAGES, *p), *v as u8),
+            ProtId::Responses => "mp:pr:rr".into(),
+            ProtId::Filter => "mp:pr:rf".into(),
+            ProtId::AltResponse => "mp:pr:ar".into(),
+            ProtId::GateAction => "mp:pr:ga".into(),
+            ProtId::TrustUsers => "mp:pr:tu".into(),
+            ProtId::TrustRoles => "mp:pr:tr".into(),
+            ProtId::Form(f) => format!("mp:pr:f:{}", tok(&PROT_FORMS, *f)),
+            ProtId::Submit(f) => format!("mp:pr:s:{}", tok(&PROT_FORMS, *f)),
         }
     }
 
@@ -394,17 +451,29 @@ impl ProtId {
             ["al", a, u] => Some(ProtId::Alt(untok(&ALT_ACTS, a)?, UserId::new(num::<u64>(u).filter(|n| *n > 0)?))),
             ["nr", s] => num(s).map(ProtId::NukeRestore),
             ["nb", s] => num(s).map(ProtId::NukeBan),
+            ["pg", p] => untok(&PROT_PAGES, p).map(ProtId::Page),
+            ["rm", v] => flag(v).map(ProtId::RaidMode),
+            ["tg", p, v] => Some(ProtId::Toggle(untok(&PROT_PAGES, p)?, flag(v)?)),
+            ["rr"] => Some(ProtId::Responses),
+            ["rf"] => Some(ProtId::Filter),
+            ["ar"] => Some(ProtId::AltResponse),
+            ["ga"] => Some(ProtId::GateAction),
+            ["tu"] => Some(ProtId::TrustUsers),
+            ["tr"] => Some(ProtId::TrustRoles),
+            ["f", f] => untok(&PROT_FORMS, f).map(ProtId::Form),
+            ["s", f] => untok(&PROT_FORMS, f).map(ProtId::Submit),
             _ => None,
         }
     }
 }
 
-const CATEGORIES: [(Category, &str); 7] = [
+const CATEGORIES: [(Category, &str); 8] = [
     (Category::Members, "members"),
     (Category::NamesVoice, "names"),
     (Category::Channels, "channels"),
     (Category::Safety, "safety"),
     (Category::AutoMod, "automod"),
+    (Category::Protection, "protection"),
     (Category::Records, "records"),
     (Category::Config, "config"),
 ];
@@ -536,6 +605,54 @@ mod tests {
         v
     }
 
+    fn prot_ids() -> Vec<ProtId> {
+        let big_u = UserId::new(u64::MAX);
+        let mut v = vec![
+            ProtId::RaidEnd,
+            ProtId::RaidBulk(true),
+            ProtId::RaidBulk(false),
+            ProtId::RaidBulkConfirm(true),
+            ProtId::RaidBulkConfirm(false),
+            ProtId::ReviewApprove(i64::MAX, usize::MAX),
+            ProtId::ReviewApprove(1, 0),
+            ProtId::ReviewApproveAll(i64::MAX),
+            ProtId::ReviewDenyRest(7),
+            ProtId::ReviewPage(i64::MAX, 3),
+            ProtId::ReviewPage(1, 0),
+            ProtId::NukeRestore(i64::MAX),
+            ProtId::NukeRestore(1),
+            ProtId::NukeBan(i64::MAX),
+            ProtId::NukeBan(0),
+            ProtId::RaidMode(true),
+            ProtId::RaidMode(false),
+            ProtId::Responses,
+            ProtId::Filter,
+            ProtId::AltResponse,
+            ProtId::GateAction,
+            ProtId::TrustUsers,
+            ProtId::TrustRoles,
+        ];
+        v.extend(ALT_ACTS.iter().map(|(a, _)| ProtId::Alt(*a, big_u)));
+        v.push(ProtId::Alt(AltAct::Quarantine, UserId::new(1)));
+        v.extend(PROT_PAGES.iter().flat_map(|(p, _)| [ProtId::Page(*p), ProtId::Toggle(*p, true), ProtId::Toggle(*p, false)]));
+        v.extend(PROT_FORMS.iter().flat_map(|(f, _)| [ProtId::Form(*f), ProtId::Submit(*f)]));
+        v
+    }
+
+    #[test]
+    fn prot_ids_round_trip() {
+        for id in prot_ids().into_iter().map(PanelId::Protection) {
+            let s = id.encode();
+            assert!(s.starts_with("mp:pr:") && s.len() <= 100, "{s}");
+            assert_eq!(PanelId::decode(&s), Some(id), "{s}");
+        }
+        assert_eq!(PanelId::Protection(ProtId::Toggle(ProtPage::Nuke, false)).encode(), "mp:pr:tg:nuke:0");
+        assert_eq!(PanelId::Category(Category::Protection).encode(), "mp:c:protection");
+        for junk in ["mp:pr:pg:zz", "mp:pr:pg", "mp:pr:rm:2", "mp:pr:tg:raid", "mp:pr:tg:raid:2", "mp:pr:tg:zz:1", "mp:pr:rr:x", "mp:pr:f:zz", "mp:pr:s", "mp:pr:tu:1"] {
+            assert_eq!(PanelId::decode(junk), None, "{junk}");
+        }
+    }
+
     #[test]
     fn round_trips_and_rejects_junk() {
         let big_u = UserId::new(u64::MAX);
@@ -566,30 +683,6 @@ mod tests {
                 }))
                 .chain(LIST_FORMS.iter().flat_map(|(f, _)| [AutoId::Form(*f), AutoId::Submit(*f)]))
                 .map(PanelId::AutoMod),
-        );
-        all.extend(
-            [
-                ProtId::RaidEnd,
-                ProtId::RaidBulk(true),
-                ProtId::RaidBulk(false),
-                ProtId::RaidBulkConfirm(true),
-                ProtId::RaidBulkConfirm(false),
-                ProtId::ReviewApprove(i64::MAX, usize::MAX),
-                ProtId::ReviewApprove(1, 0),
-                ProtId::ReviewApproveAll(i64::MAX),
-                ProtId::ReviewDenyRest(7),
-                ProtId::ReviewPage(i64::MAX, 3),
-                ProtId::ReviewPage(1, 0),
-                ProtId::Alt(AltAct::Approve, big_u),
-                ProtId::Alt(AltAct::Quarantine, UserId::new(1)),
-                ProtId::Alt(AltAct::Kick, big_u),
-                ProtId::Alt(AltAct::Ban, big_u),
-                ProtId::NukeRestore(i64::MAX),
-                ProtId::NukeRestore(1),
-                ProtId::NukeBan(i64::MAX),
-                ProtId::NukeBan(0),
-            ]
-            .map(PanelId::Protection),
         );
         all.extend(CATEGORIES.iter().map(|(c, _)| PanelId::Category(*c)));
         all.extend(ACTIONS.iter().map(|(a, _)| PanelId::Modal(*a, Some(big_u), Some(big_c))));

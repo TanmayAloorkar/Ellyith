@@ -123,6 +123,11 @@ pub async fn end_raid(db: &PgPool, id: i64) -> Result<bool, sqlx::Error> {
     Ok(sqlx::query("UPDATE protection_raids SET ended_at=now() WHERE id=$1 AND ended_at IS NULL").bind(id).execute(db).await?.rows_affected() == 1)
 }
 
+/// When the guild's last raid ended; `None` if it never had one.
+pub async fn last_raid_end(db: &PgPool, guild: i64) -> Result<Option<DateTime<Utc>>, sqlx::Error> {
+    Ok(sqlx::query_as::<_, (Option<DateTime<Utc>>,)>("SELECT max(ended_at) FROM protection_raids WHERE guild_id=$1").bind(guild).fetch_one(db).await?.0)
+}
+
 /// Active raids whose end time has passed.
 pub async fn due_raids(db: &PgPool, now: DateTime<Utc>) -> Result<Vec<RaidRow>, sqlx::Error> {
     sqlx::query_as(&format!("SELECT {RAID_COLS} FROM protection_raids WHERE ended_at IS NULL AND ends_at <= $1")).bind(now).fetch_all(db).await

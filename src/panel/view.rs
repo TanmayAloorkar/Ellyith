@@ -4,22 +4,24 @@ use poise::serenity_prelude::{ButtonStyle, CreateActionRow, CreateButton, Create
 
 type Views = (CreateEmbed, Vec<CreateActionRow>);
 
-const HOME_ROWS: [(&str, &str); 7] = [
+const HOME_ROWS: [(&str, &str); 8] = [
     ("👤 Members", "Warn, timeout, kick and ban"),
     ("🏷️ Names & voice", "Nicknames, voice mute, move, disconnect"),
     ("🧹 Channels", "Purge messages, lockdown"),
     ("🛡️ Safety", "Quarantine, verification, health check"),
-    ("🤖 AutoMod", "Banned words, spam and link rules"),
+    ("🤖 AutoMod", "Banned words, spam and link rules · Manage Server only"),
+    ("🚨 Protection", "Raids, alt accounts, new accounts, anti-nuke · Manage Server only"),
     ("📁 Records", "History, cases and private notes"),
     ("⚙️ Config", "Bot settings · Manage Server only"),
 ];
 
-const HOME_ORDER: [(Category, ButtonStyle); 7] = [
+const HOME_ORDER: [(Category, ButtonStyle); 8] = [
     (Category::Members, ButtonStyle::Primary),
     (Category::NamesVoice, ButtonStyle::Primary),
     (Category::Channels, ButtonStyle::Primary),
     (Category::Safety, ButtonStyle::Primary),
     (Category::AutoMod, ButtonStyle::Primary),
+    (Category::Protection, ButtonStyle::Primary),
     (Category::Records, ButtonStyle::Primary),
     (Category::Config, ButtonStyle::Secondary),
 ];
@@ -156,7 +158,7 @@ pub fn home() -> Views {
             rows.join("\n")
         ));
     let buttons: Vec<CreateButton> = HOME_ORDER.iter().zip(HOME_ROWS).map(|((c, st), (label, _))| button(PanelId::Category(*c), label, *st)).collect();
-    // Rows of 4 and 3 (Discord allows 5).
+    // Rows of 4 and 4 (Discord allows 5).
     (embed, buttons.chunks(4).map(|c| CreateActionRow::Buttons(c.to_vec())).collect())
 }
 
@@ -196,6 +198,7 @@ pub fn category(c: Category) -> Views {
             CreateEmbed::new().colour(Tone::Config.colour()).title("🤖 AutoMod"),
             vec![super::automod::rule_menu(), back_row()],
         ),
+        Category::Protection => (CreateEmbed::new().colour(Tone::Safety.colour()).title("🚨 Protection"), super::protection::overview_rows(false)),
         Category::Records => grouped(Tone::Records, "Records", "Look things up and keep notes.", RECORDS, None),
         Category::Config => {
             let mut e = CreateEmbed::new().colour(Tone::Config.colour()).title("Config").description("Bot settings. Changes apply right away.");
@@ -234,7 +237,7 @@ mod tests {
 
     #[test]
     fn limits_and_every_id_decodes() {
-        let cats = [Category::Members, Category::NamesVoice, Category::Channels, Category::Safety, Category::AutoMod, Category::Records, Category::Config];
+        let cats = [Category::Members, Category::NamesVoice, Category::Channels, Category::Safety, Category::AutoMod, Category::Protection, Category::Records, Category::Config];
         for (embed, rows) in std::iter::once(home()).chain(cats.map(category)) {
             let v = serde_json::to_value(&rows).unwrap();
             assert!(v.as_array().unwrap().len() <= 5);
@@ -275,14 +278,16 @@ mod tests {
     }
 
     #[test]
-    fn home_has_category_buttons() {
+    fn home_has_protection() {
         let ids = button_ids(&home().1);
         let cats: Vec<_> = ids.iter().map(|i| PanelId::decode(i)).collect();
         use Category::*;
-        assert_eq!(cats, [Members, NamesVoice, Channels, Safety, AutoMod, Records, Config].map(|c| Some(PanelId::Category(c))));
+        assert_eq!(cats, [Members, NamesVoice, Channels, Safety, AutoMod, Protection, Records, Config].map(|c| Some(PanelId::Category(c))));
         let v = serde_json::to_value(home().1).unwrap();
         let lens: Vec<usize> = v.as_array().unwrap().iter().map(|r| r["components"].as_array().unwrap().len()).collect();
-        assert_eq!(lens, [4, 3]);
+        assert_eq!(lens, [4, 4]);
+        assert_eq!(v[1]["components"][1]["label"], "🚨 Protection");
+        assert_eq!(v[1]["components"][1]["style"], 1);
     }
 
     #[test]
