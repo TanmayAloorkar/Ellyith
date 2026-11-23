@@ -1,3 +1,4 @@
+pub mod engine;
 pub mod matchers;
 pub mod normalize;
 pub mod rules;

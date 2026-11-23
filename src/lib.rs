@@ -16,6 +16,7 @@ pub struct Data {
     pub db: sqlx::PgPool,
     pub home_guild: poise::serenity_prelude::GuildId,
     pub msg_cache: std::sync::Arc<logging::cache::MessageCache>,
+    pub automod: std::sync::Arc<automod::engine::AutoMod>,
 }
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Context<'a> = poise::Context<'a, Data, Error>;
