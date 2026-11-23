@@ -100,11 +100,12 @@ fn overview(s: &ProtectionSettings, trusted: usize, active: Option<&RaidRow>, la
     };
     let on = |enabled: bool, rest: String| if enabled { format!("On · {rest}") } else { "Off".into() };
     let responses = if s.raid_responses.is_empty() { "no responses".into() } else { s.raid_responses.join(" + ") };
-    let alt = if s.alt_response == "flag" { "flag to staff".to_string() } else { s.alt_response.clone() };
+    let alt = label(&ACTION_LABELS, &s.alt_response).to_lowercase();
+    let gate = label(&ACTION_LABELS, &s.gate_action).to_lowercase();
     let l = [
         (format!("{EMOJI_RAID} Raid protection"), on(s.raid_enabled, format!("{} joins in {}s · {responses}", s.raid_joins, s.raid_secs))),
         (format!("{EMOJI_ALTS} Alt detection"), on(s.alt_enabled, format!("score {}+ · {alt}", s.alt_threshold))),
-        (format!("{EMOJI_GATE} New account gate"), on(s.gate_enabled, format!("under {} · {}", plural(s.gate_days, "day"), s.gate_action))),
+        (format!("{EMOJI_GATE} New account gate"), on(s.gate_enabled, format!("under {} · {gate}", plural(s.gate_days, "day")))),
         (format!("{EMOJI_NUKE} Anti-nuke"), on(s.nuke_enabled, format!("7 limits · {trusted} trusted"))),
     ];
     (embed(format!("{EMOJI_PROTECTION} Protection"), &format!("{status}\n\n{}", lines(&l))), overview_rows(active.is_some()))
@@ -245,6 +246,7 @@ fn form_inputs(f: ProtForm, s: &ProtectionSettings) -> (&'static str, Vec<(Strin
                 v("Threshold (1-400)", s.alt_threshold),
             ],
         ),
+        ProtForm::AltDays => ("Alt detection settings", vec![v("Account age under (days)", s.alt_days)]),
         ProtForm::GateSettings => ("New account gate", vec![v("Minimum account age, days (0-365)", s.gate_days)]),
         ProtForm::Limits1 => (
             "Anti-nuke limits (1 of 2)",
@@ -281,6 +283,7 @@ async fn submit(inv: &Invoker<'_>, f: ProtForm, v: &[String]) -> Result<CreateEm
             let _ = core::alts_points_core(inv, Points { age: Some(n[0]), avatar: Some(n[1]), name: Some(n[2]), invite: Some(n[3]) }).await?;
             core::alts_settings_core(inv, None, None, Some(n[4])).await
         }
+        ProtForm::AltDays => core::alts_settings_core(inv, None, Some(numbers(v, 1)?[0]), None).await,
         ProtForm::GateSettings => core::gate_settings_core(inv, Some(numbers(v, 1)?[0]), None).await,
         ProtForm::Limits1 => {
             let n = numbers(v, 4)?;
@@ -337,6 +340,7 @@ async fn toggle(inv: &Invoker<'_>, p: ProtPage, on: bool) -> Result<CreateEmbed,
 }
 
 /// Multi-select: every option goes through the add/remove core; the last reply shows the result.
+/// shortcut: one save per option, not atomic; a DB error midway leaves a partial change, pressing again repairs it. Add a set-all core if that matters.
 async fn set_list(inv: &Invoker<'_>, all: &[&str], picked: &[String], filter: bool) -> Result<CreateEmbed, Error> {
     let mut last = None;
     for o in all {
@@ -347,6 +351,7 @@ async fn set_list(inv: &Invoker<'_>, all: &[&str], picked: &[String], filter: bo
 }
 
 /// Trusted select: trust the newly picked, untrust the unpicked the select showed, then show the list.
+/// shortcut: only the first 25 of each kind are manageable here; beyond that use /antinuke trust remove.
 async fn set_trusted(inv: &Invoker<'_>, kind: TrustKind, picked: Vec<u64>) -> Result<CreateEmbed, Error> {
     let shown: Vec<u64> = trusted_of(&trusted(inv).await?, kind).into_iter().take(MAX_PICK).collect();
     let add = picked.iter().filter(|p| !shown.contains(p)).map(|p| (*p, true));
@@ -428,11 +433,13 @@ async fn on_category(ctx: &serenity::Context, data: &Data, ci: &ComponentInterac
     Ok(())
 }
 
-/// After the first limits pop-up, offer the second.
+/// After the first limits or alt pop-up, offer the second.
 fn after_submit_row(f: ProtForm) -> CreateActionRow {
     let mut row = vec![];
-    if f == ProtForm::Limits1 {
-        row.push(button(ProtId::Form(ProtForm::Limits2), "More limits…", ButtonStyle::Secondary));
+    match f {
+        ProtForm::Limits1 => row.push(button(ProtId::Form(ProtForm::Limits2), "More limits…", ButtonStyle::Secondary)),
+        ProtForm::AltPoints => row.push(button(ProtId::Form(ProtForm::AltDays), "More settings…", ButtonStyle::Secondary)),
+        _ => {}
     }
     row.push(to_overview());
     CreateActionRow::Buttons(row)
@@ -679,6 +686,12 @@ mod tests {
         assert!(d.contains("**🌊 Raid protection** On · 10 joins in 10s · alert + quarantine"));
         assert!(d.contains("**🕵️ Alt detection** On · score 60+ · flag to staff"));
         assert!(d.contains("**🐣 New account gate** Off"));
+        let mut g = defaults();
+        g.gate_enabled = true;
+        g.alt_response = "quarantine".into();
+        let gd = json!(overview(&g, 0, None, None).0)["description"].as_str().unwrap().to_string();
+        assert!(gd.contains("**🐣 New account gate** On · under 7 days · quarantine"), "{gd}");
+        assert!(gd.contains("score 60+ · quarantine"));
         assert!(d.contains("**💣 Anti-nuke** On · 7 limits · 3 trusted"));
 
         let r = json!(raid_page(&s));
@@ -724,9 +737,10 @@ mod tests {
     #[test]
     fn popups_fit_discord() {
         let s = defaults();
-        let forms = [ProtForm::RaidSettings, ProtForm::AltPoints, ProtForm::GateSettings, ProtForm::Limits1, ProtForm::Limits2];
+        let forms = [ProtForm::RaidSettings, ProtForm::AltPoints, ProtForm::AltDays, ProtForm::GateSettings, ProtForm::Limits1, ProtForm::Limits2];
         let sizes: Vec<usize> = forms.iter().map(|f| form_inputs(*f, &s).1.len()).collect();
-        assert_eq!(sizes, [4, 5, 1, 4, 3]);
+        assert_eq!(sizes, [4, 5, 1, 1, 4, 3]);
+        assert_eq!(form_inputs(ProtForm::AltDays, &s), ("Alt detection settings", vec![("Account age under (days)".to_string(), 7)]));
         for f in forms {
             let v = json!(form_modal(f, &s));
             assert!(v["title"].as_str().unwrap().chars().count() <= 45 && v["custom_id"].as_str().unwrap().len() <= 100);
@@ -753,5 +767,8 @@ mod tests {
         let ids = view::button_ids(&[after_submit_row(ProtForm::Limits1)]);
         assert_eq!(ids[0], pid(ProtId::Form(ProtForm::Limits2)));
         assert_eq!(view::button_ids(&[after_submit_row(ProtForm::Limits2)]), [PanelId::Category(Category::Protection).encode()]);
+        let alt = json!(&[after_submit_row(ProtForm::AltPoints)]);
+        assert_eq!(alt[0]["components"][0]["custom_id"], pid(ProtId::Form(ProtForm::AltDays)));
+        assert_eq!(alt[0]["components"][0]["label"], "More settings…");
     }
 }

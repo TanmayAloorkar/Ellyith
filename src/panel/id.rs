@@ -209,6 +209,8 @@ pub enum ProtPage {
 pub enum ProtForm {
     RaidSettings,
     AltPoints,
+    /// Second alt pop-up: the young-account day count.
+    AltDays,
     GateSettings,
     Limits1,
     Limits2,
@@ -216,8 +218,8 @@ pub enum ProtForm {
 
 pub const PROT_PAGES: [(ProtPage, &str); 4] = [(ProtPage::Raid, "raid"), (ProtPage::Alts, "alts"), (ProtPage::Gate, "gate"), (ProtPage::Nuke, "nuke")];
 
-const PROT_FORMS: [(ProtForm, &str); 5] =
-    [(ProtForm::RaidSettings, "raid"), (ProtForm::AltPoints, "pts"), (ProtForm::GateSettings, "gate"), (ProtForm::Limits1, "lim1"), (ProtForm::Limits2, "lim2")];
+const PROT_FORMS: [(ProtForm, &str); 6] =
+    [(ProtForm::RaidSettings, "raid"), (ProtForm::AltPoints, "pts"), (ProtForm::AltDays, "days"), (ProtForm::GateSettings, "gate"), (ProtForm::Limits1, "lim1"), (ProtForm::Limits2, "lim2")];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AltAct {
@@ -648,6 +650,8 @@ mod tests {
         }
         assert_eq!(PanelId::Protection(ProtId::Toggle(ProtPage::Nuke, false)).encode(), "mp:pr:tg:nuke:0");
         assert_eq!(PanelId::Category(Category::Protection).encode(), "mp:c:protection");
+        assert_eq!(PanelId::Protection(ProtId::Submit(ProtForm::AltDays)).encode(), "mp:pr:s:days");
+        assert!(prot_ids().contains(&ProtId::Form(ProtForm::AltDays)));
         for junk in ["mp:pr:pg:zz", "mp:pr:pg", "mp:pr:rm:2", "mp:pr:tg:raid", "mp:pr:tg:raid:2", "mp:pr:tg:zz:1", "mp:pr:rr:x", "mp:pr:f:zz", "mp:pr:s", "mp:pr:tu:1"] {
             assert_eq!(PanelId::decode(junk), None, "{junk}");
         }
