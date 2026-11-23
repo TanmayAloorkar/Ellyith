@@ -10,6 +10,7 @@ pub mod reply;
 pub mod panel;
 pub mod safety;
 pub mod automod;
+pub mod protection;
 
 #[derive(Clone)]
 pub struct Data {
