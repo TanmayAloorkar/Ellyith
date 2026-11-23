@@ -1,12 +1,12 @@
 //! The join pipeline: raid, then the new account gate, then alt scoring. Verification runs after, in events.rs.
 use super::logic::{decide_join, gate_blocks, JoinOutcome};
 use super::{alts, raid, store, EMOJI_GATE};
-use crate::moderation::actions::{execute, ActionRequest};
+use crate::moderation::actions::{execute_with_dm, ActionRequest};
 use crate::moderation::cases::{Actor, CaseKind};
 use crate::safety::quarantine::{self, QuarantineReason};
 use crate::{Data, UserError};
 use chrono::{DateTime, Utc};
-use poise::serenity_prelude::{self as serenity, CreateMessage, Member};
+use poise::serenity_prelude::{self as serenity, Member};
 use std::time::Instant;
 
 pub const GATE_REASON: &str = "New account gate";
@@ -88,11 +88,9 @@ pub async fn on_join(ctx: &serenity::Context, data: &Data, member: &Member) -> b
                 }
                 "kick" | "ban" => {
                     let kind = if s.gate_action == "ban" { CaseKind::Ban } else { CaseKind::Kick };
-                    if let Err(e) = user.direct_message(ctx, CreateMessage::new().content(gate_dm_text(s.gate_days, created))).await {
-                        tracing::warn!("gate DM to {user} failed: {e}");
-                    }
                     let req = ActionRequest { guild_id: guild, target: user, kind, actor: Actor::AutoPunishment, reason: Some(GATE_REASON.into()), duration: None, ban_delete_days: 0, log_case: true };
-                    match execute(ctx, data, req).await {
+                    // One DM, the gate text, sent by execute only once its precheck passes, before the kick/ban.
+                    match execute_with_dm(ctx, data, req, Some(gate_dm_text(s.gate_days, created))).await {
                         Ok(_) => true,
                         Err(e) => {
                             tracing::warn!("gate {} of {user} failed: {e}", kind.as_str());
