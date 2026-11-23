@@ -72,6 +72,7 @@ pub async fn punish(
             reason: reason.clone(),
             duration,
             ban_delete_days,
+            log_case: true,
         },
     )
     .await?;

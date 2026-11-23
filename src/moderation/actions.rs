@@ -18,6 +18,13 @@ pub struct ActionRequest {
     pub reason: Option<String>,
     pub duration: Option<Duration>,
     pub ban_delete_days: u8,
+    /// False when the caller posts its own log entry (AutoMod): the case is still recorded.
+    pub log_case: bool,
+}
+
+/// Non-punishments never make a case, so they always log; a punishment logs unless the caller logs it itself.
+fn logs_case(log_case: bool, kind: CaseKind) -> bool {
+    log_case || !kind.is_punishment()
 }
 
 /// Map a fired ladder rule to the action to run.
@@ -35,6 +42,7 @@ fn ladder_request(guild_id: GuildId, target: UserId, rule: &LadderRule, warns: i
         reason: Some(format!("Reached {warns} warnings")),
         duration: rule.duration_secs.map(Duration::seconds),
         ban_delete_days: 0,
+        log_case: true,
     }
 }
 
@@ -183,22 +191,21 @@ pub async fn execute(ctx: &serenity::Context, data: &Data, req: ActionRequest) -
         jobs::schedule(&data.db, gid, JobKind::Unban, t.get() as i64, at).await?;
     }
 
-    let case = record_or_log(
-        ctx,
-        data,
-        number,
-        NewCase {
-            guild_id: gid,
-            kind: req.kind,
-            target_id: t.get() as i64,
-            actor: req.actor,
-            reason: req.reason,
-            duration_secs: req.duration.map(|d| d.num_seconds()),
-            expires_at,
-            dm_failed,
-        },
-    )
-    .await?;
+    let new_case = NewCase {
+        guild_id: gid,
+        kind: req.kind,
+        target_id: t.get() as i64,
+        actor: req.actor,
+        reason: req.reason,
+        duration_secs: req.duration.map(|d| d.num_seconds()),
+        expires_at,
+        dm_failed,
+    };
+    let case = match (logs_case(req.log_case, new_case.kind), number) {
+        (true, _) => record_or_log(ctx, data, number, new_case).await?,
+        (false, Some(n)) => Some(cases::insert(&data.db, n, &new_case).await?),
+        (false, None) => Some(cases::create(&data.db, &new_case).await?),
+    };
 
     if let (CaseKind::Warn, Some(case)) = (req.kind, &case) {
         if let Err(e) = apply_ladder(ctx, data, g, t).await {
@@ -270,6 +277,18 @@ mod tests {
         let tb = LadderRule { warn_count: 7, action: LadderAction::Tempban, duration_secs: Some(86_400) };
         let r = ladder_request(GuildId::new(1), UserId::new(2), &tb, 7);
         assert_eq!((r.kind, r.duration), (CaseKind::Tempban, Some(Duration::seconds(86_400))));
+    }
+
+    #[test]
+    fn log_case_flag() {
+        // A ladder escalation is its own action and always logs.
+        let rule = LadderRule { warn_count: 3, action: LadderAction::Timeout, duration_secs: Some(60) };
+        assert!(ladder_request(GuildId::new(1), UserId::new(2), &rule, 3).log_case);
+        assert!(logs_case(true, CaseKind::Warn));
+        assert!(!logs_case(false, CaseKind::Warn));
+        assert!(!logs_case(false, CaseKind::Timeout));
+        // Non-punishments have no case, so the log entry is all there is.
+        assert!(logs_case(false, CaseKind::Untimeout));
     }
 
     #[test]

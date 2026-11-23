@@ -445,6 +445,8 @@ async fn act(ctx: &serenity::Context, data: &Data, guild: GuildId, user: UserId,
                 reason: Some(format!("AutoMod: {}", labels(&d.rules))),
                 duration: (kind == CaseKind::Timeout).then(|| chrono::Duration::seconds(d.timeout_secs)),
                 ban_delete_days: 0,
+                // The AutoMod log entry carries the case number: one entry per trigger.
+                log_case: false,
             },
         )
         .await
