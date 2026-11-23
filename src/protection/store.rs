@@ -38,6 +38,7 @@ pub async fn get_settings(db: &PgPool, guild: i64) -> Result<ProtectionSettings,
     sqlx::query_as("SELECT * FROM protection_settings WHERE guild_id = $1").bind(guild).fetch_one(db).await
 }
 
+/// Writes every setting except `nuke_enabled` on an existing row (only `set_nuke_enabled`, owner-gated, changes it).
 pub async fn save_settings(db: &PgPool, s: &ProtectionSettings) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO protection_settings (guild_id, raid_enabled, raid_joins, raid_secs, raid_responses, raid_filter, raid_filter_days, raid_end_mins, \
@@ -46,7 +47,7 @@ pub async fn save_settings(db: &PgPool, s: &ProtectionSettings) -> Result<(), sq
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27) \
          ON CONFLICT (guild_id) DO UPDATE SET raid_enabled=$2, raid_joins=$3, raid_secs=$4, raid_responses=$5, raid_filter=$6, raid_filter_days=$7, raid_end_mins=$8, \
          alt_enabled=$9, alt_days=$10, alt_pts_age=$11, alt_pts_avatar=$12, alt_pts_name=$13, alt_pts_invite=$14, alt_threshold=$15, alt_response=$16, \
-         gate_enabled=$17, gate_days=$18, gate_action=$19, nuke_enabled=$20, nuke_window_secs=$21, nuke_bans=$22, nuke_kicks=$23, nuke_chan_del=$24, \
+         gate_enabled=$17, gate_days=$18, gate_action=$19, nuke_window_secs=$21, nuke_bans=$22, nuke_kicks=$23, nuke_chan_del=$24, \
          nuke_role_del=$25, nuke_webhooks=$26, nuke_perms=$27",
     )
     .bind(s.guild_id)
@@ -78,6 +79,15 @@ pub async fn save_settings(db: &PgPool, s: &ProtectionSettings) -> Result<(), sq
     .bind(s.nuke_perms)
     .execute(db)
     .await?;
+    Ok(())
+}
+
+pub async fn set_nuke_enabled(db: &PgPool, guild: i64, on: bool) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO protection_settings (guild_id, nuke_enabled) VALUES ($1, $2) ON CONFLICT (guild_id) DO UPDATE SET nuke_enabled = $2")
+        .bind(guild)
+        .bind(on)
+        .execute(db)
+        .await?;
     Ok(())
 }
 

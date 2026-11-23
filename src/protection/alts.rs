@@ -36,10 +36,12 @@ pub async fn score_member(_ctx: &serenity::Context, data: &Data, member: &Member
             return AltScore { total: 0, lines: vec![] };
         }
     };
-    let bans = store::recent_bans(&data.db, gid, now - chrono::Duration::days(30)).await.unwrap_or_else(|e| {
+    let mut bans = store::recent_bans(&data.db, gid, now - chrono::Duration::days(30)).await.unwrap_or_else(|e| {
         tracing::warn!("alt: recent bans for {gid} failed: {e}");
         vec![]
     });
+    // A rejoin after an unban is not an alt of themselves.
+    bans.retain(|b| b.user_id != uid);
     let code = match store::member_invite(&data.db, gid, uid).await {
         Ok(v) => v.and_then(|(c, _)| c),
         Err(e) => {

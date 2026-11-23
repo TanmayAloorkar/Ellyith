@@ -232,18 +232,30 @@ async fn strip_roles(ctx: &serenity::Context, data: &Data, guild: GuildId, user:
     let removed: Vec<i64> = removable.iter().map(|r| *r as i64).collect();
     // Stored before Discord removes them, so they can always be given back.
     let id = store::record_strip(&data.db, gid, user.get() as i64, &removed, what).await?;
-    if removed.is_empty() {
-        return Ok((done, removed, id, m.user.name));
-    }
-    let audit = truncate(&format!("Anti-nuke: {what}"), 512);
-    let edit = EditMember::new().roles(kept.into_iter().map(RoleId::new)).audit_log_reason(&audit);
-    match guild.edit_member(ctx, user, edit).await {
-        Ok(_) => Ok((done, removed, id, m.user.name)),
-        Err(e) => {
-            tracing::warn!("anti-nuke strip of {user} in {guild} failed: {e}");
-            Ok((format!("Could not remove roles: {e}"), vec![], id, m.user.name))
+    let stuck = !kept.is_empty();
+    let (done, removed) = if removed.is_empty() {
+        (done, removed)
+    } else {
+        let audit = truncate(&format!("Anti-nuke: {what}"), 512);
+        let edit = EditMember::new().roles(kept.into_iter().map(RoleId::new)).audit_log_reason(&audit);
+        match guild.edit_member(ctx, user, edit).await {
+            Ok(_) => (done, removed),
+            Err(e) => {
+                tracing::warn!("anti-nuke strip of {user} in {guild} failed: {e}");
+                (format!("Could not remove roles: {e}"), vec![])
+            }
         }
-    }
+    };
+    // A bot keeps its managed integration role (and its permissions): it is kicked, as the bot-add guard does.
+    let done = if m.user.bot && (stuck || removed.is_empty()) {
+        match guild.kick_with_reason(ctx, user, "Anti-nuke: bot whose roles could not be removed").await {
+            Ok(()) => format!("{done} The bot was kicked."),
+            Err(e) => format!("{done} Kicking the bot failed: {e}"),
+        }
+    } else {
+        done
+    };
+    Ok((done, removed, id, m.user.name))
 }
 
 /// Remove every role below the bot's top role, store them, and post the alert pinging the owner.

@@ -326,9 +326,8 @@ pub async fn nuke_enabled_core(inv: &Invoker<'_>, on: bool) -> Result<CreateEmbe
     } else {
         require_owner(inv).await?;
     }
-    let mut s = load(inv).await?;
-    s.nuke_enabled = on;
-    save(inv, &s).await?;
+    store::set_nuke_enabled(&inv.data.db, gid(inv), on).await?;
+    let s = load(inv).await?;
     let n = trusted_count(inv).await?;
     Ok(reply::done(Tone::Safety, &format!("{EMOJI_NUKE} Anti-nuke turned {}", if on { "on" } else { "off" }), &nuke_lines(&s, n), None))
 }

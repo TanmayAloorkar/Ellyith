@@ -22,7 +22,6 @@ async fn settings_defaults_and_save(pool: PgPool) {
     c.raid_filter = vec!["age".into(), "avatar".into()];
     c.alt_response = "quarantine".into();
     c.gate_action = "kick".into();
-    c.nuke_enabled = true;
     c.nuke_perms = 4;
     save_settings(&pool, &c).await.unwrap();
     assert_eq!(get_settings(&pool, 1).await.unwrap(), c);
@@ -124,4 +123,18 @@ async fn ban_record_carries_invite(pool: PgPool) {
     record_ban(&pool, 1, 2, "bad", "Bad One", code.as_deref()).await.unwrap();
     let b = recent_bans(&pool, 1, Utc::now() - Duration::hours(1)).await.unwrap();
     assert_eq!(b[0].invite_code.as_deref(), Some("abc"));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn stale_save_keeps_nuke_enabled(pool: PgPool) {
+    let stale = get_settings(&pool, 1).await.unwrap();
+    set_nuke_enabled(&pool, 1, true).await.unwrap();
+    assert!(get_settings(&pool, 1).await.unwrap().nuke_enabled);
+    // A save loaded before the owner turned anti-nuke on must not turn it back off.
+    save_settings(&pool, &stale).await.unwrap();
+    assert!(get_settings(&pool, 1).await.unwrap().nuke_enabled);
+    set_nuke_enabled(&pool, 1, false).await.unwrap();
+    assert!(!get_settings(&pool, 1).await.unwrap().nuke_enabled);
+    set_nuke_enabled(&pool, 2, true).await.unwrap();
+    assert!(get_settings(&pool, 2).await.unwrap().nuke_enabled);
 }
