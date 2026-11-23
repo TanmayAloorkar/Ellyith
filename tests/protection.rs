@@ -112,3 +112,12 @@ async fn member_invite_round_trip(pool: PgPool) {
     record_member_invite(&pool, 1, 2, None, None).await.unwrap();
     assert_eq!(member_invite(&pool, 1, 2).await.unwrap(), Some((None, None)));
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn ban_record_carries_invite(pool: PgPool) {
+    record_member_invite(&pool, 1, 2, Some("abc"), Some(9)).await.unwrap();
+    let code = member_invite(&pool, 1, 2).await.unwrap().and_then(|(c, _)| c);
+    record_ban(&pool, 1, 2, "bad", "Bad One", code.as_deref()).await.unwrap();
+    let b = recent_bans(&pool, 1, Utc::now() - Duration::hours(1)).await.unwrap();
+    assert_eq!(b[0].invite_code.as_deref(), Some("abc"));
+}

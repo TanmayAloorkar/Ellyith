@@ -97,6 +97,7 @@ async fn main() {
                     home_guild: serenity::GuildId::new(guild_id),
                     msg_cache: std::sync::Arc::new(aio_bot::logging::cache::MessageCache::new(10_000, std::time::Duration::from_secs(24 * 3600))),
                     automod: std::sync::Arc::new(aio_bot::automod::engine::AutoMod::new()),
+                    protection: std::sync::Arc::new(aio_bot::protection::Runtime::new()),
                 };
                 tokio::spawn(aio_bot::scheduler::run(ctx.clone(), data.clone()));
                 tokio::spawn(aio_bot::automod::scam::run(data.clone()));
@@ -110,7 +111,8 @@ async fn main() {
         | serenity::GatewayIntents::GUILD_MESSAGES
         | serenity::GatewayIntents::MESSAGE_CONTENT
         | serenity::GatewayIntents::GUILD_MODERATION
-        | serenity::GatewayIntents::GUILD_VOICE_STATES;
+        | serenity::GatewayIntents::GUILD_VOICE_STATES
+        | serenity::GatewayIntents::GUILD_INVITES;
 
     let mut client = serenity::ClientBuilder::new(&token, intents)
         .framework(framework)

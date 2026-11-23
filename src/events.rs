@@ -2,6 +2,7 @@ use crate::automod::engine;
 use crate::moderation::jobs::{self, JobKind};
 use crate::logging::{audit, messages};
 use crate::moderation::nickname;
+use crate::protection::invites;
 use crate::safety::quarantine;
 use crate::{Data, Error};
 use poise::serenity_prelude as serenity;
@@ -27,6 +28,14 @@ pub async fn event_handler(
                 check_member(ctx, data, new_member).await;
             }
             audit::on_join(ctx, data, new_member).await
+        }
+        serenity::FullEvent::GuildCreate { guild, .. } if guild.id == data.home_guild => {
+            data.protection.invites.load(ctx, guild.id).await
+        }
+        serenity::FullEvent::InviteCreate { data: ev } => invites::on_invite_create(data, ev),
+        serenity::FullEvent::InviteDelete { data: ev } => invites::on_invite_delete(data, ev),
+        serenity::FullEvent::GuildBanAddition { guild_id, banned_user } => {
+            invites::on_ban(ctx, data, *guild_id, banned_user).await
         }
         serenity::FullEvent::ChannelCreate { channel } => quarantine::on_channel_create(ctx, data, channel).await,
         serenity::FullEvent::GuildMemberRemoval { guild_id, user, member_data_if_available } => {

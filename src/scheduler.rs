@@ -12,8 +12,16 @@ const REASON: &str = "Tempban expired";
 /// Runs due jobs every 30 s. The first tick is immediate, so jobs missed while offline run at startup.
 pub async fn run(ctx: serenity::Context, data: Data) {
     let mut tick = tokio::time::interval(Duration::from_secs(30));
+    let mut last_prune: Option<std::time::Instant> = None;
     loop {
         tick.tick().await;
+        // Ban records only matter for 30 days; prune once a day.
+        if last_prune.is_none_or(|t| t.elapsed() >= Duration::from_secs(24 * 3600)) {
+            last_prune = Some(std::time::Instant::now());
+            if let Err(e) = crate::protection::store::prune_bans(&data.db, Utc::now() - chrono::Duration::days(30)).await {
+                tracing::warn!("scheduler: pruning ban records failed: {e}");
+            }
+        }
         match jobs::due(&data.db, Utc::now()).await {
             Ok(list) => {
                 for job in list {

@@ -18,6 +18,7 @@ pub struct Data {
     pub home_guild: poise::serenity_prelude::GuildId,
     pub msg_cache: std::sync::Arc<logging::cache::MessageCache>,
     pub automod: std::sync::Arc<automod::engine::AutoMod>,
+    pub protection: std::sync::Arc<protection::Runtime>,
 }
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Context<'a> = poise::Context<'a, Data, Error>;
